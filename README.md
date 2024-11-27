@@ -10,7 +10,7 @@ User-Centric Legal benchmark
 /dataset/data_processing/legal_prompt.json shows the user-simulator prompt, model prompt, and evaluation prompt for each task. Due to the different backgrounds of each task, their prompts have slight variations.
 
 ## data
-/dataset/legal_data_sample.json shows our data. We only open-source part of the data and keep some data private to prevent data leakage. We will download the model weights ourselves and conduct tests on the local server.
+We divide the data into two tracks: **public** and **private**. The data for the **public track** is openly available (see `/dataset/legal_data_sample.json`), while we reserve a portion of the data for the **private track**. In the private track, we evaluate existing models in an offline manner (models are downloaded and evaluated locally). This approach helps us avoid data leakage.
 
 # Experiment
 
