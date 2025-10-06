@@ -82,7 +82,7 @@ class GPTPerson():
                     # ).json()
                     # if 'choices' not in response and 'error' in response:
                     #     raise Exception(response['error']['message'] + '\n' + 'apikey:'+self.api_key)
-                    client = OpenAI(api_key=self.api_key, base_url=self.api_url)
+                    client = OpenAI(api_key=self.api_key, base_url=self.gpt_url)
 
                     response = client.chat.completions.create(
                         model=self.model_name,
