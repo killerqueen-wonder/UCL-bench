@@ -203,7 +203,7 @@ def mt_dialogue_gen(data_path,model_path,result_path):
                 model_prompt = data["model_prompt"]
                 
                 print("\n----------------------------------- model_prompt\n" + model_prompt)
-                gpt = GPTPerson(data=data,model_name="gpt-4-0613")
+                gpt = GPTPerson(data=data,model_name=args.model_name,gpt_url=args.api_url,api_key=args.api_key)
                 query = gpt.initial_response()
                 dialogue = dialogue + "用户：" + query + "\n"
                 print("\n-----------------------------------query\n"+query)
@@ -246,6 +246,9 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', default='/mntcephfs/lab_data/ganruoli/UC_bench/dataset/legal_data/legal_data_sample.json', type=str)
     parser.add_argument('--model_path', default='/mntcephfs/data/med/zhanghongbo/yaojishi/cjy/ckpts/huatuo2_7B_v2/checkpoint-0-30346/tfmr32', type=str)
     parser.add_argument('--result_path', default='/mntcephfs/lab_data/ganruoli/UC_bench/experiment/legal/chatglm3-6b_legal.json', type=str)
+    parser.add_argument("--model_name", type=str, default="gpt-4o-2024-11-20", help="Name of the GPT model to use.")
+    parser.add_argument("--api_key", type=str, required=True, help="OpenAI API key.")
+    parser.add_argument("--api_url", type=str, default="https://api.openai.com/v1/chat/completions", help="OpenAI API URL.")
     parser.add_argument('--seed', default=42, type=int)
     args = parser.parse_args()
     set_seed(args.seed)

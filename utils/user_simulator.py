@@ -5,14 +5,14 @@ import json
 
 
 class GPTPerson():
-    def __init__(self, data ,model_name = "gpt-4"):
+    def __init__(self, data ,model_name,gpt_url,api_key):
         with open("config/configuration.json", 'r', encoding='utf-8') as file:
             config = json.load(file)
-        self.api_key = config["gpt_key"]
+        self.api_key = api_key
         self.model_name = model_name
         self.role = data["role_prompt"]
         self._initial_person()
-        self.gpt_url = "xxxx"  ## change url 
+        self.gpt_url = gpt_url
 
     def _initial_person(self):
         self.temp_messages = [{"role": "system", "content": self.role}]
