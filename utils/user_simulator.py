@@ -5,14 +5,15 @@ import json
 
 
 class GPTPerson():
-    def __init__(self, data ,model_name,gpt_url,api_key):
-        with open("config/configuration.json", 'r', encoding='utf-8') as file:
-            config = json.load(file)
+    def __init__(self, data ,model_name,gpt_url,api_key,temperature=0.1):
+        
         self.api_key = api_key
         self.model_name = model_name
         self.role = data["role_prompt"]
         self._initial_person()
         self.gpt_url = gpt_url
+        self.temperature = temperature
+        print(f"Using model: {self.model_name}")
 
     def _initial_person(self):
         self.temp_messages = [{"role": "system", "content": self.role}]
@@ -43,12 +44,13 @@ class GPTPerson():
     @retry(wait_fixed=2000, stop_max_attempt_number=50)
     def call_api_timelimit(self):
         class InterruptableThread(threading.Thread):
-            def __init__(self,temp_messages,api_key,model_name):
+            def __init__(self,temp_messages,api_key,model_name,gpt_url):
                 threading.Thread.__init__(self)
                 self.result = None
                 self.temp_messages = temp_messages
                 self.api_key = api_key
                 self.model_name = model_name
+                self.gpt_url=gpt_url
 
             def run(self):
                 try:
@@ -73,7 +75,7 @@ class GPTPerson():
                 except Exception as e:
                     print(e)
 
-        it = InterruptableThread(self.temp_messages,self.api_key,self.model_name)
+        it = InterruptableThread(self.temp_messages,self.api_key,self.model_name,self.gpt_url)
         it.start()
         # 时间
         timeout_duration = 200
