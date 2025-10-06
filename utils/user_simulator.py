@@ -2,7 +2,7 @@ import requests
 import threading
 from retrying import retry
 import json
-
+from openai import OpenAI
 
 class GPTPerson():
     def __init__(self, data ,model_name,gpt_url,api_key,temperature=0.1):
