@@ -47,7 +47,9 @@ class GPTPerson():
             temperature=self.temperature,
             stream=False
         )
-        response_text = response["choices"][0]["message"]["content"].strip()
+        # response_text = response["choices"][0]["message"]["content"].strip()
+        response_text = response.choices[0].message.content.strip()
+
         if 'error' in response_text:
             raise ValueError(f"API Error: {response_text}")
 
@@ -91,7 +93,9 @@ class GPTPerson():
                         temperature=0.2,
                         stream=False
                     )
-                    response_text = response["choices"][0]["message"]["content"].strip()
+                    # response_text = response["choices"][0]["message"]["content"].strip()
+                    response_text = response.choices[0].message.content.strip()
+
                     self.result = response_text
                 except Exception as e:
                     print(e)
