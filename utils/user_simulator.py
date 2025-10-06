@@ -16,7 +16,7 @@ class GPTPerson():
         print(f"Using model: {self.model_name}")
 
     def _initial_person(self):
-        print(f'[debug]init person')
+        # print(f'[debug]init person')
         self.temp_messages = [{"role": "system", "content": self.role}]
 
     @retry(wait_fixed=200, stop_max_attempt_number=10)

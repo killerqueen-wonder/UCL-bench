@@ -140,7 +140,7 @@ class LLM:
             # 生成输出
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=3000,
+                max_new_tokens=1500,
                 temperature=0.7,
                 do_sample=True,
                 eos_token_id=self.left_tokenizer.eos_token_id,
