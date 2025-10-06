@@ -88,7 +88,7 @@ class GPTPerson():
                         model=self.model_name,
                         messages=[{"role": "user", "content": self.temp_messages}],
                         # messages=[{"role": "user", "content": self.temp_messages}],
-                        temperature=self.temperature,
+                        temperature=0.2,
                         stream=False
                     )
                     response_text = response["choices"][0]["message"]["content"].strip()
