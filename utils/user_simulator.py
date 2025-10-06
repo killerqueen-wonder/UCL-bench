@@ -20,24 +20,35 @@ class GPTPerson():
 
     @retry(wait_fixed=200, stop_max_attempt_number=10)
     def call_api(self):
-        parameters = {
-            "model": self.model_name,
-            "messages": self.temp_messages
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        response = requests.post(
-            self.gpt_url,
-            headers=headers,
-            json=parameters
-        ).json()
+        # parameters = {
+        #     "model": self.model_name,
+        #     "messages": self.temp_messages
+        # }
+        # headers = {
+        #     "Content-Type": "application/json",
+        #     "Authorization": f"Bearer {self.api_key}"
+        # }
+        # response = requests.post(
+        #     self.gpt_url,
+        #     headers=headers,
+        #     json=parameters
+        # ).json()
 
-        if 'choices' not in response and 'error' in response:
-            raise Exception(response['error']['message'] + '\n' + 'apikey:'+self.api_key)
+        # if 'choices' not in response and 'error' in response:
+        #     raise Exception(response['error']['message'] + '\n' + 'apikey:'+self.api_key)
         
+        client = OpenAI(api_key=self.api_key, base_url=self.api_url)
+
+        response = client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": self.temp_messages}],
+            temperature=self.temperature,
+            stream=False
+        )
         response_text = response["choices"][0]["message"]["content"].strip()
+        if 'error' in response_text:
+            raise ValueError(f"API Error: {response_text}")
+
         return response_text
     
 
@@ -90,7 +101,8 @@ class GPTPerson():
         self.temp_messages.append({"role": "user", "content": message})
         # response_text = self.call_api()
         try:
-            response_text = self.call_api_timelimit()
+            response_text = self.call_api()
+            # response_text = self.call_api_timelimit()
         except Exception as e:
             response_text = ""
         self.temp_messages.append({"role": "assistant", "content": response_text})
@@ -98,7 +110,8 @@ class GPTPerson():
     
     def initial_response(self):
         try:
-            response_text = self.call_api_timelimit()
+            response_text = self.call_api()
+            # response_text = self.call_api_timelimit()
         except Exception as e:
             response_text = ""
         self.temp_messages.append({"role": "assistant", "content": response_text})
