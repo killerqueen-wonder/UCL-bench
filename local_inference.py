@@ -121,6 +121,41 @@ class LLM:
             history.append({"role": "assistant", "content":res })
             return res , history , ""
         
+        if "qwen3" in self.model_path.lower():
+            # 拼接历史对话内容
+            full_input = ""
+            if history:
+                for turn in history:
+                    full_input += f"用户: {turn['user']}\n助手: {turn['assistant']}\n"
+            full_input += f"用户: {query}\n助手:"
+
+            # 编码输入
+            inputs = self.left_tokenizer(
+                full_input,
+                return_tensors="pt",
+                truncation=True,
+                max_length=8000
+            ).to(self.model.device)
+
+            # 生成输出
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=512,
+                temperature=0.7,
+                do_sample=True,
+                eos_token_id=self.left_tokenizer.eos_token_id,
+                pad_token_id=self.left_tokenizer.pad_token_id,
+            )
+
+            # 解码文本
+            res = self.left_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # 仅保留助手回答部分
+            res = res.split("助手:")[-1].strip()
+
+            # 更新历史
+            history.append({"user": query, "assistant": res})
+            return res, history, full_input
+    
         if  'qwen'  in args.model_path.lower() or 'internlm' in args.model_path.lower() or 'chatglm' in args.model_path.lower()\
                 or "bianque" in args.model_path.lower() or "fuzi-mingcha" in args.model_path.lower():
             if history == [] :
