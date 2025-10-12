@@ -107,9 +107,9 @@ class LLM:
         self.model = model
         self.left_tokenizer = left_tokenizer
 
-    def gen(self, query , history = None, model_prompt=""):
-        if history and len(history) == 0:
-                history = None
+    def gen(self, query , history = [], model_prompt=""):
+        # if history and len(history) == 0:
+        #         history = None
 
         if "deepseek-llm" in args.model_path.lower():
             if history == [] :
@@ -124,7 +124,7 @@ class LLM:
         if "qwen3" in self.model_path.lower():
             # 拼接历史对话内容
             full_input = ""
-            if history:
+            if len(history):#历史非空
                 for turn in history:
                     full_input += f"用户: {turn['user']}\n助手: {turn['assistant']}\n"
             full_input += f"用户: {query}\n助手:"
@@ -134,7 +134,7 @@ class LLM:
                 full_input,
                 return_tensors="pt",
                 truncation=True,
-                max_length=8000
+                max_length=6000
             ).to(self.model.device)
 
             # 生成输出
