@@ -224,9 +224,9 @@ def mt_dialogue_gen(data_path,model_path,result_path):
                 
                 print("\n----------------------------------- model_prompt\n" + model_prompt)
 
-                gpt = GPTPerson(data=data,model_name=args.model_name,gpt_url=args.api_url,api_key=args.api_key)
-                query = gpt.initial_response()#role prompt要求GPT角色扮演用户
-                # query=data["needs"]
+                # gpt = GPTPerson(data=data,model_name=args.model_name,gpt_url=args.api_url,api_key=args.api_key)
+                # query = gpt.initial_response()#role prompt要求GPT角色扮演用户
+                query=data["needs"]
                 dialogue = dialogue + "用户：" + query + "\n"
                 print("\n-----------------------------------first query\n"+query)
                 history = []
