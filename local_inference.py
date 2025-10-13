@@ -126,7 +126,7 @@ class LLM:
                 history.append({"role":"system","content":model_prompt})
             history.append({"role": "user", "content": query})
 
-            text = self.tokenizer.apply_chat_template(
+            text = self.left_tokenizer.apply_chat_template(
                 history,
                 tokenize=False,
                 add_generation_prompt=True
