@@ -68,6 +68,7 @@ class GPTPerson():
                 self.gpt_url=gpt_url
 
             def run(self):
+                #用temp_messages询问GPT
                 try:
                     # parameters = {
                     # "model": self.model_name,

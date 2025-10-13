@@ -122,39 +122,23 @@ class LLM:
             return res , history , ""
         
         if "qwen3" in self.model_path.lower():
-            # 拼接历史对话内容
-            full_input = ""
-            if len(history):#历史非空
-                for turn in history:
-                    full_input += f"用户: {turn['user']}\n助手: {turn['assistant']}\n"
-            full_input += f"用户: {query}\n助手:"
+            if history == [] :
+                history.append({"role":"system","content":model_prompt})
+            history.append({"role": "user", "content": query})
 
-            # 编码输入
-            inputs = self.left_tokenizer(
-                full_input,
-                return_tensors="pt",
-                truncation=True,
-                max_length=6000
-            ).to(self.model.device)
-
-            # 生成输出
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=1500,
-                temperature=0.7,
-                do_sample=True,
-                eos_token_id=self.left_tokenizer.eos_token_id,
-                pad_token_id=self.left_tokenizer.pad_token_id,
+            text = self.tokenizer.apply_chat_template(
+                history,
+                tokenize=False,
+                add_generation_prompt=True
             )
 
-            # 解码文本
-            res = self.left_tokenizer.decode(outputs[0], skip_special_tokens=True)
-            # 仅保留助手回答部分
-            res = res.split("助手:")[-1].strip()
+            inputs = self.tokenizer(text, return_tensors="pt")
+            response_ids = self.model.generate(**inputs, max_new_tokens=8000)[0][len(inputs.input_ids[0]):].tolist()
+            response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
 
-            # 更新历史
-            history.append({"user": query, "assistant": res})
-            return res, history, full_input
+            # Update history
+            history.append({"role": "assistant", "content": response})
+            return res, history, ''
     
         if  'qwen'  in args.model_path.lower() or 'internlm' in args.model_path.lower() or 'chatglm' in args.model_path.lower()\
                 or "bianque" in args.model_path.lower() or "fuzi-mingcha" in args.model_path.lower():
@@ -239,7 +223,7 @@ def mt_dialogue_gen(data_path,model_path,result_path):
                 
                 print("\n----------------------------------- model_prompt\n" + model_prompt)
                 gpt = GPTPerson(data=data,model_name=args.model_name,gpt_url=args.api_url,api_key=args.api_key)
-                query = gpt.initial_response()
+                query = gpt.initial_response()#role prompt要求GPT角色扮演
                 dialogue = dialogue + "用户：" + query + "\n"
                 print("\n-----------------------------------query\n"+query)
                 history = []
