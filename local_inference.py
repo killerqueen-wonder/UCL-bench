@@ -224,28 +224,31 @@ def mt_dialogue_gen(data_path,model_path,result_path):
                 
                 print("\n----------------------------------- model_prompt\n" + model_prompt)
                 gpt = GPTPerson(data=data,model_name=args.model_name,gpt_url=args.api_url,api_key=args.api_key)
-                query = gpt.initial_response()#role prompt要求GPT角色扮演
+                query = gpt.initial_response()#role prompt要求GPT角色扮演用户
                 dialogue = dialogue + "用户：" + query + "\n"
-                print("\n-----------------------------------query\n"+query)
+                print("\n-----------------------------------first query\n"+query)
                 history = []
-                for round in range(1,4):
+                for round in range(1,2):#单轮问答
                     data["dialogue_round"] = round  ## 用于记录轮次 
-                    ## AI 助手生成回复
+                    ## 本地AI 助手生成回复
                     res,history,input = llm.gen(query,history,model_prompt)
                     res = res.strip()
                     print("\n-----------------------------------res\n"+res)
                     dialogue = dialogue + "AI助手：" + res + "\n"
                     
                     ##### 防止最后一轮 GPT 提问
-                    if round == 3:
-                        break
+                    # if round == 3:
+                    #     break
 
                     ## user 继续提问
-                    query = gpt.response(res)
-                    query = query.strip()
-                    if "咨询结束" in query:
-                        break
-                    dialogue = dialogue + "用户：" + query + "\n"
+                    # query = gpt.response(res)
+                    # query = query.strip()
+                    # if "咨询结束" in query:
+                    #     print('---------------------------咨询结束')
+                    #     break
+                    # dialogue = dialogue + "用户：" + query + "\n"
+                    # print(f'------------------------query')
+                    # print(query)
 
                 ## 结果 data
                 data['dialogue'] = dialogue
