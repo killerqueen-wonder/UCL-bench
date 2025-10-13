@@ -139,7 +139,7 @@ class LLM:
 
             # Update history
             history.append({"role": "assistant", "content": response})
-            return res, history, ''
+            return response, history, ''
     
         if  'qwen'  in args.model_path.lower() or 'internlm' in args.model_path.lower() or 'chatglm' in args.model_path.lower()\
                 or "bianque" in args.model_path.lower() or "fuzi-mingcha" in args.model_path.lower():
