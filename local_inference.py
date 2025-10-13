@@ -132,9 +132,9 @@ class LLM:
                 add_generation_prompt=True
             )
 
-            inputs = self.tokenizer(text, return_tensors="pt")
+            inputs = self.left_tokenizer(text, return_tensors="pt")
             response_ids = self.model.generate(**inputs, max_new_tokens=8000)[0][len(inputs.input_ids[0]):].tolist()
-            response = self.tokenizer.decode(response_ids, skip_special_tokens=True)
+            response = self.left_tokenizer.decode(response_ids, skip_special_tokens=True)
 
             # Update history
             history.append({"role": "assistant", "content": response})
