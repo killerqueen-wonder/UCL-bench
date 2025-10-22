@@ -97,7 +97,7 @@ class LLM:
         else:
             left_tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, padding_side='left')
 
-        if 'Qwen-' in args.model_path:
+        if 'Qwen' in args.model_path:
             left_tokenizer.pad_token_id = 151643
             left_tokenizer.eos_token_id = 151643
         if  left_tokenizer.pad_token is None:
