@@ -106,7 +106,7 @@ class LLM:
         
         self.model = model
         self.left_tokenizer = left_tokenizer
-
+    
     def gen(self, query , history = [], model_prompt=""):
         # if history and len(history) == 0:
         #         history = None
@@ -121,7 +121,7 @@ class LLM:
             history.append({"role": "assistant", "content":res })
             return res , history , ""
         
-        if "qwen3" in self.model_path.lower():
+        if "qwen" in self.model_path.lower():
             if history == [] :
                 history.append({"role":"system","content":model_prompt})
             history.append({"role": "user", "content": query})
