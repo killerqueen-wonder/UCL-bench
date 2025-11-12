@@ -21,25 +21,7 @@ def call_api_timelimit(messages,api_key,gpt_url):
 
         def run(self):
             try:
-                # parameters = {
-                # "model": "gpt-4-0613",
-                # "messages": self.messages
-                # }
-                # headers = {
-                #     "Content-Type": "application/json",
-                #     "Authorization": "Bearer sk-IlhmAWpQFIfc5a0IF566F7Fe93A04522A255422c68158fD7"
-                # }
-                # response = requests.post(
-                #     "https://api.ai-gaochao.cn/v1/chat/completions",
-                #     headers=headers,
-                #     json=parameters,
-                # ).json()
-
-                # if 'choices' not in response and 'error' in response:
-                #     raise Exception(response['error']['message'] + '\n')
                 
-                # response_text = response["choices"][0]["message"]["content"].strip()
-                # self.result = response_text
                 client = OpenAI(api_key=self.api_key, base_url=self.gpt_url)
 
                 response = client.chat.completions.create(
