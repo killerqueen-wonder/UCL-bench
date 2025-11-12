@@ -17,7 +17,7 @@ import requests
 from utils.user_simulator import GPTPerson
 
 
-
+#从本地模型输出各评测集的回答，支持retriever
 os.umask(0)
 logger = logging.getLogger(__name__)
 logging.basicConfig(level='INFO')
@@ -215,12 +215,11 @@ class LLM_retriever:
 
         return _passages2string(results[0])
 
-    def gen(self, question, history=None):
+    def gen(self, query , history = [], model_prompt=""):
         """执行完整的思考-检索-再思考-回答流程"""
-        if history is None:
-            history = []
+        
 
-        question = question.strip()
+        question = query.strip()
         # if question[-1] != '?':
         #     question += '?'
 
@@ -234,15 +233,29 @@ class LLM_retriever:
             f"以下是需要回答的问题：{question}\n"
         )
 
-        # 构造prompt
+        
+        if history == [] :
+            history.append({"role":"system","content":model_prompt})
+        history.append({"role": "user", "content": system_prompt})
+
         if self.tokenizer.chat_template:
             prompt = self.tokenizer.apply_chat_template(
-                [{"role": "user", "content": system_prompt}],
-                add_generation_prompt=True,
-                tokenize=False
-            )
+                history,
+                tokenize=False,
+                add_generation_prompt=True
+                    )
+            
         else:
             prompt = system_prompt
+        # # 构造prompt
+        # if self.tokenizer.chat_template:
+        #     prompt = self.tokenizer.apply_chat_template(
+        #         [{"role": "user", "content": system_prompt}],
+        #         add_generation_prompt=True,
+        #         tokenize=False
+        #     )
+        # else:
+        #     prompt = system_prompt
 
         cnt = 0
         print('\n\n################# [Start Reasoning + Searching] ##################\n\n')
@@ -346,6 +359,8 @@ def mt_dialogue_gen(data_path,llm,result_path):
 
         torch.cuda.empty_cache()
         accelerator.wait_for_everyone()
+
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Args of sft')
