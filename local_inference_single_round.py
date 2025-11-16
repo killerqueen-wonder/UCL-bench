@@ -211,7 +211,7 @@ class LLM_retriever:
     """
     实现一个“思考-检索-再思考-回答”的闭环生成系统。
     """
-    def __init__(self, model_path, api_key=None, api_url=None, max_turn=5,retrieve_path="http://127.0.0.1:8006/retrieve",topk=topk):
+    def __init__(self, model_path, api_key=None, api_url=None, max_turn=5,retrieve_path="http://127.0.0.1:8006/retrieve",topk=3):
         self.model_path = model_path
         self.topk=topk
         self.api_key = api_key
