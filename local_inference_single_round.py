@@ -14,7 +14,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 import re
 import requests
 
-from utils.user_simulator import GPTPerson
+
 
 
 #从本地模型输出各评测集的回答，支持retriever
@@ -104,31 +104,107 @@ class LLM:
 
             # Update history
             history.append({"role": "assistant", "content": response})
-            return response, history
+            return response
     
 
 
-# Define the custom stopping criterion
-class StopOnSequence(transformers.StoppingCriteria):
-    def __init__(self, target_sequences, tokenizer):
-        # Encode the string so we have the exact token-IDs pattern
-        self.target_ids = [tokenizer.encode(target_sequence, add_special_tokens=False) for target_sequence in target_sequences]
-        self.target_lengths = [len(target_id) for target_id in self.target_ids]
-        self._tokenizer = tokenizer
+import torch.nn.functional as F
 
-    def __call__(self, input_ids, scores, **kwargs):
-        # Make sure the target IDs are on the same device
-        targets = [torch.as_tensor(target_id, device=input_ids.device) for target_id in self.target_ids]
+class StreamStopper:
+    """
+    流式生成检测 </search> 或 </answer>，停止生成。
+    """
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.buffer = ""  # 累积本次生成的新文本
+        self.done = False
+        self.action = None  # "search" 或 "answer"
+        self.output_text = ""
 
-        if input_ids.shape[1] < min(self.target_lengths):
-            return False
+    
+    def process_token(self, token_id):
+        """
+        接收新生成的 token_id，累积到 generated_ids，并 decode 新增部分到 buffer。
+        同时检测 </search> 或 </answer> 停止。
+        """
+        # 保存 token_id 到生成列表
+        if not hasattr(self, "generated_ids"):
+            self.generated_ids = []
 
-        # Compare the tail of input_ids with our target_ids
-        for i, target in enumerate(targets):
-            if torch.equal(input_ids[0, -self.target_lengths[i]:], target):
-                return True
+        self.generated_ids.append(token_id.item())
 
-        return False
+        # decode 当前所有 token
+        text = self.tokenizer.decode(self.generated_ids, skip_special_tokens=False)
+
+        # 取新生成的部分
+        new_text = text[len(self.buffer):]  # 只取新增文本
+        self.buffer += new_text
+
+        # 检测 </search> 或 </answer>
+        if "</search>" in self.buffer and not self.done:
+            self.done = True
+            self.action = "search"
+            # 输出从生成开始到 </search> 的内容
+            # self.output_text = self.buffer.split("</search>")[0] + "</search>"
+            self.output_text = self.tokenizer.decode(self.generated_ids, skip_special_tokens=False).split("</search>")[0] + "</search>"
+
+        elif "</answer>" in self.buffer and not self.done:
+            self.done = True
+            self.action = "answer"
+            # self.output_text = self.buffer.split("</answer>")[0] + "</answer>"
+            self.output_text = self.tokenizer.decode(self.generated_ids, skip_special_tokens=False).split("</answer>")[0] + "</answer>"
+
+        return new_text  # 返回新增的可显示文本
+
+
+
+@torch.no_grad()
+def stream_until_search(model, tokenizer, input_ids, 
+                        max_new_tokens=1500, 
+                        temperature=0.3,
+                        repetition_penalty = 1.2):
+    """
+    流式生成，检测 </search> 和 </answer>。
+    返回:
+        action: "search" 或 "answer"
+        output_text: 本轮生成内容，decode为文本
+    """
+    stopper = StreamStopper(tokenizer)
+
+    generated = input_ids
+    past_key_values = None
+
+    for _ in range(max_new_tokens):
+        # 模型前向
+        outputs = model(
+            generated if past_key_values is None else generated[:, -1:],
+            use_cache=True,
+            past_key_values=past_key_values
+        )
+        logits = outputs.logits[:, -1, :]
+        past_key_values = outputs.past_key_values
+
+        # 对每个 token 进行惩罚
+        for token_id in set(generated[0].tolist()):  # 用 set 避免重复遍历
+            logits[0, token_id] /= repetition_penalty  # 或者 logits[0, token_id] /= repetition_penalty
+
+
+        # 采样下一个 token
+        probs = F.softmax(logits / temperature, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)
+
+        # 处理 token
+        stopper.process_token(next_token[0])
+        
+        # 追加 token
+        generated = torch.cat((generated, next_token), dim=1)
+
+        # 检查是否停止
+        if stopper.done:
+            break
+
+    return stopper.action, stopper.output_text
+
 
 
 class LLM_retriever:
@@ -160,8 +236,7 @@ class LLM_retriever:
             self.tokenizer.pad_token = '</s>'
 
         # 停止条件定义
-        self.target_sequences = ["</search>", " </search>", "</search>\n", " </search>\n", "</search>\n\n", " </search>\n\n"]
-        self.stopping_criteria = transformers.StoppingCriteriaList([StopOnSequence(self.target_sequences, self.tokenizer)])
+        # self.target_sequences = ["</search>", " </search>", "</search>\n", " </search>\n", "</search>\n\n", " </search>\n\n"]
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.curr_eos = [151645, 151643]
@@ -215,48 +290,30 @@ class LLM_retriever:
 
         return _passages2string(results[0])
 
-    def gen(self, query , history = [], model_prompt=""):
+    def gen(self, query ,
+             history = [], model_prompt=""
+            ):
         """执行完整的思考-检索-再思考-回答流程"""
         
 
         question = query.strip()
-        # if question[-1] != '?':
-        #     question += '?'
+        model_prompt =model_prompt.strip()
+        if len(model_prompt):
+            question = model_prompt + question
 
         system_prompt = (
             "根据要求，回答问题。你必须遵守思考-检索-思考-回答的推理模式。\n"
             "思考：对问题进行推理，尝试解答。推理过程中，如果你发现涉及某些法律条文，则进入检索步骤。\n"
             "检索：请把需要检索的关键词放在 <search> 和 </search> 标签之间，调用搜索引擎。例如：<search> 民法典 盗窃罪 </search>。\n"
             "系统将返回最相关的搜索结果，并置于 <information> 和 </information> 标签之间。根据返回的结果，继续下一步思考。\n"
-            "再次思考：基于检索结果，继续对问题进行推理。如果没有帮助，则修改关键词重新检索；如果有把握得到最终答案，则进入回答。\n"
-            "回答：在 <answer> 和 </answer> 标签内提供最终答案。\n"
+            "再次思考：基于检索结果，继续对问题进行推理。如果没有帮助，则修改关键词重新检索,不要重复检索已经检索过的关键词；如果有把握得到最终答案，则进入回答。\n"
+            "回答：注意！在 <answer> 和 </answer> 标签内提供最终答案。例如：<answer> 北京 </answer>\n"
             f"以下是需要回答的问题：{question}\n"
         )
 
         
-        if history == [] :
-            history.append({"role":"system","content":model_prompt})
-        history.append({"role": "user", "content": system_prompt})
-
-        if self.tokenizer.chat_template:
-            prompt = self.tokenizer.apply_chat_template(
-                history,
-                tokenize=False,
-                add_generation_prompt=True
-                    )
-            
-        else:
-            prompt = system_prompt
-        # # 构造prompt
-        # if self.tokenizer.chat_template:
-        #     prompt = self.tokenizer.apply_chat_template(
-        #         [{"role": "user", "content": system_prompt}],
-        #         add_generation_prompt=True,
-        #         tokenize=False
-        #     )
-        # else:
-        #     prompt = system_prompt
-
+        
+        prompt = system_prompt
         cnt = 0
         print('\n\n################# [Start Reasoning + Searching] ##################\n\n')
         print(f'**[prompt]:{prompt}')
@@ -264,47 +321,74 @@ class LLM_retriever:
         while True:
             input_ids = self.tokenizer.encode(prompt, return_tensors='pt').to(self.device)
             
-            outputs = self.model.generate(
-                input_ids,
-                max_new_tokens=2500,
-                stopping_criteria=self.stopping_criteria,
-                pad_token_id=self.tokenizer.eos_token_id,
-                do_sample=True,
-                temperature=0.3
-            )
+            
+            # outputs = self.model.generate(
+            #     input_ids,
+            #     max_new_tokens=1500,
+            #     # stopping_criteria=self.stopping_criteria,
+            #     streamer=self.streamer,
+            #     pad_token_id=self.tokenizer.eos_token_id,
+            #     do_sample=True,
+            #     temperature=0.3,
+            #     repetition_penalty	=1.1
+            # )
+            
 
-            generated_tokens = outputs[0][input_ids.shape[1]:]
-            output_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            action, output_text = stream_until_search(
+                                                    self.model,
+                                                    self.tokenizer,
+                                                    input_ids,
+                                                    max_new_tokens=1500,
+                                                    temperature=0.4,
+                                                    repetition_penalty = 1.2
+                                                    )
+
+            instruct=''
+            search_results=''
+
             print(f'[debug] output_text="{output_text}"')
 
-            if outputs[0][-1].item() in self.curr_eos or cnt > self.max_turn:
+            if action=="answer" or cnt > self.max_turn:
                 response = output_text
+                print(f'[debug]search turn:{cnt}')
+                print(f'[debug]final answer:{response}')
                 break
 
-            tmp_query = self._extract_query(output_text)
-            print(f'[debug] search query="{tmp_query}"')
-            if tmp_query and( cnt < self.max_turn):
+            elif action=="search":
+                tmp_query = self._extract_query(output_text)
+                print(f'[debug] search query="{tmp_query}"')
+                if tmp_query and( cnt < self.max_turn):
+                    
+                    search_results = self._search(tmp_query)
                 
-                search_results = self._search(tmp_query)
-            
-            elif cnt==self.max_turn:
-                search_results = "到达检索次数限制，接下来直接输出回答。"
+                elif cnt==self.max_turn:
+                    instruct = "跳过检索阶段。注意：接下来总结以上思考，必须给出最终回答！把最终答案放在 <answer> 和 </answer>之间。"
+
+                else:
+                    instruct="检索失败。重新检索或直接回答。"
 
             else:
-                search_results = "检索失败。重新检索或直接回答。"
+                instruct="\n我先前的操作有问题。 \
+如果我想搜索，应该把关键词放在<search> 和 </search>之间。 \
+如果我想给出最终回答，应该把答案放在 <answer> 和 </answer>之间。让我重新思考。\n"
 
-            print(f'**[debug]searching result :\n"{search_results}"')
+            if len(search_results):
+                print(f'**[debug]searching result :\n"{search_results}"')
+            if len(instruct):
+                print(f'**[debug]instruct :"{instruct}"')
 
             search_text = self.search_template.format(output_text=output_text, search_results=search_results)
             prompt += search_text
+            prompt += instruct
+
             cnt += 1
 
-        # 更新历史记录
-        history.append({"role": "user", "content": question})
-        history.append({"role": "assistant", "content": response})
+        # # 更新历史记录
+        # history.append({"role": "user", "content": question})
+        # history.append({"role": "assistant", "content": response})
 
-        return response, history
-        
+        return response
+         
 
 
 
@@ -340,7 +424,8 @@ def mt_dialogue_gen(data_path,llm,result_path):
                 for round in range(1,2):#单轮问答
                     data["dialogue_round"] = round  ## 用于记录轮次 
                     ## 本地AI 助手生成回复
-                    res,history = llm.gen(query,history,model_prompt)
+                    # res,history = llm.gen(query,history,model_prompt)
+                    res = llm.gen(query,history,model_prompt)
                     res = res.strip()
                     print("\n-----------------------------------res\n"+res)
                     dialogue = dialogue + "AI助手：" + res + "\n"
@@ -368,10 +453,11 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', default='/mntcephfs/lab_data/ganruoli/UC_bench/dataset/legal_data/legal_data_sample.json', type=str)
     parser.add_argument('--model_path', default='/mntcephfs/data/med/zhanghongbo/yaojishi/cjy/ckpts/huatuo2_7B_v2/checkpoint-0-30346/tfmr32', type=str)
     parser.add_argument('--result_path', default='/mntcephfs/lab_data/ganruoli/UC_bench/experiment/legal/chatglm3-6b_legal.json', type=str)
-    # parser.add_argument("--model_name", type=str, default="gpt-4o-2024-11-20", help="Name of the GPT model to use.")
-    parser.add_argument("--api_key", type=str, required=True, help="OpenAI API key.")
-    parser.add_argument("--api_url", type=str, default="https://api.openai.com/v1/chat/completions", help="OpenAI API URL.")
+    parser.add_argument("--model_name", type=str, default="gpt-4o-2024-11-20", help="Name of the GPT model to use.")
+    # parser.add_argument("--api_key", type=str, required=True, help="OpenAI API key.")
+    # parser.add_argument("--api_url", type=str, default="https://api.openai.com/v1/chat/completions", help="OpenAI API URL.")
     parser.add_argument('--seed', default=42, type=int)
+    parser.add_argument('--max_turn', default=5, type=int)
     parser.add_argument('--retriever', default=False, type=bool)
     
     args = parser.parse_args()
@@ -379,7 +465,7 @@ if __name__ == '__main__':
     model_path=args.model_path
 
     if args.retriever:
-        llm=LLM_retriever(model_path)
+        llm=LLM_retriever(model_path,retrieve_path=args.retrieve_path,max_turn=args.max_turn)
     else:
         llm= LLM(model_path)
 
