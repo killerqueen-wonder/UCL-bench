@@ -459,6 +459,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--max_turn', default=5, type=int)
     parser.add_argument('--retriever', default=False, type=bool)
+    parser.add_argument('--retrieve_path', default="http://127.0.0.1:8006/retrieve", type=str)
     
     args = parser.parse_args()
     set_seed(args.seed)
