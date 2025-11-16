@@ -295,9 +295,7 @@ class LLM_retriever:
 
         return _passages2string(results[0])
 
-    def gen(self, query ,
-             history = [], model_prompt=""
-            ):
+    def gen(self, query ,history = [], model_prompt=""):
         """执行完整的思考-检索-再思考-回答流程"""
         
 
