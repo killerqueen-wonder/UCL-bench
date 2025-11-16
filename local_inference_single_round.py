@@ -104,7 +104,7 @@ class LLM:
 
             # Update history
             history.append({"role": "assistant", "content": response})
-            return response
+            return response,history
     
 
 
@@ -211,9 +211,9 @@ class LLM_retriever:
     """
     实现一个“思考-检索-再思考-回答”的闭环生成系统。
     """
-    def __init__(self, model_path, api_key=None, api_url=None, max_turn=5,retrieve_path="http://127.0.0.1:8006/retrieve"):
+    def __init__(self, model_path, api_key=None, api_url=None, max_turn=5,retrieve_path="http://127.0.0.1:8006/retrieve",topk=topk):
         self.model_path = model_path
-        
+        self.topk=topk
         self.api_key = api_key
         self.api_url = api_url
         self.retrieve_path = retrieve_path
@@ -246,6 +246,11 @@ class LLM_retriever:
         pattern = re.compile(r"<search>(.*?)</search>", re.DOTALL)
         matches = pattern.findall(text)
         return matches[-1] if matches else None
+    
+    def _extract_answer(self, text):
+        pattern = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+        matches = pattern.findall(text)
+        return matches[-1] if matches else None
 
     def _search(self, query):
         """调用本地检索服务"""
@@ -253,7 +258,7 @@ class LLM_retriever:
             print("[WARNING] Empty query passed to search function.")
             return ""
 
-        payload = {"queries": [query], "topk": 3, "return_scores": True}
+        payload = {"queries": [query], "topk": self.topk, "return_scores": True}
         try:
             response = requests.post(
                 self.retrieve_path,
@@ -297,7 +302,7 @@ class LLM_retriever:
         
 
         question = query.strip()
-        model_prompt =model_prompt.strip()
+        # model_prompt =model_prompt.strip()
         if len(model_prompt):
             question = model_prompt + question
 
@@ -314,25 +319,13 @@ class LLM_retriever:
         
         
         prompt = system_prompt
+        history.append(prompt)
         cnt = 0
         print('\n\n################# [Start Reasoning + Searching] ##################\n\n')
         print(f'**[prompt]:{prompt}')
 
         while True:
             input_ids = self.tokenizer.encode(prompt, return_tensors='pt').to(self.device)
-            
-            
-            # outputs = self.model.generate(
-            #     input_ids,
-            #     max_new_tokens=1500,
-            #     # stopping_criteria=self.stopping_criteria,
-            #     streamer=self.streamer,
-            #     pad_token_id=self.tokenizer.eos_token_id,
-            #     do_sample=True,
-            #     temperature=0.3,
-            #     repetition_penalty	=1.1
-            # )
-            
 
             action, output_text = stream_until_search(
                                                     self.model,
@@ -347,6 +340,7 @@ class LLM_retriever:
             search_results=''
 
             print(f'[debug] output_text="{output_text}"')
+            history.append(output_text)
 
             if action=="answer" or cnt > self.max_turn:
                 response = output_text
@@ -374,6 +368,7 @@ class LLM_retriever:
 
             if len(search_results):
                 print(f'**[debug]searching result :\n"{search_results}"')
+                history.append(search_results)
             if len(instruct):
                 print(f'**[debug]instruct :"{instruct}"')
 
@@ -383,69 +378,150 @@ class LLM_retriever:
 
             cnt += 1
 
-        # # 更新历史记录
-        # history.append({"role": "user", "content": question})
-        # history.append({"role": "assistant", "content": response})
+        history='/n'.join(history)
 
-        return response
-         
+        if self._extract_answer(response):
+            return self._extract_answer(response),history
+        else:
+            return response,history
+
 
 
 
         
 
 
-def mt_dialogue_gen(data_path,llm,result_path):
-    accelerator = Accelerator()
-    # torch.cuda.set_device(accelerator.process_index)
+# def mt_dialogue_gen(data_path,llm,result_path):
+#     accelerator = Accelerator()
+#     # torch.cuda.set_device(accelerator.process_index)
     
-    ## dataset 
+#     ## dataset 
+#     dataset = TestDataset(data_path)
+#     # 注意 batch_size
+#     val_dataloader = DataLoader(dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=dataset.collate_fn)
+#     val_dataloader = accelerator.prepare(val_dataloader)
+#     accelerator.wait_for_everyone()
+
+#     with torch.no_grad():
+#         dataloader_iterator = tqdm(val_dataloader, total=len(val_dataloader)) if accelerator.is_main_process else val_dataloader
+#         print(dataloader_iterator)
+
+#         data_list = []  ## 多个数据的对话列表。
+#         for batch in dataloader_iterator:
+#             for data in batch:
+#                 dialogue = ""  ## 用于记录对话
+#                 model_prompt = data["model_prompt"]
+                
+#                 print("\n----------------------------------- model_prompt\n" + model_prompt)
+#                 query=data["needs"]
+#                 dialogue = dialogue + "用户：" + query + "\n"
+#                 print("\n-----------------------------------first query\n"+query)
+#                 history = []
+#                 for round in range(1,2):#单轮问答
+#                     data["dialogue_round"] = round  ## 用于记录轮次 
+#                     ## 本地AI 助手生成回复
+#                     res,history = llm.gen(query,history,model_prompt)
+#                     # res = llm.gen(query,history,model_prompt)
+#                     res = res.strip()
+#                     print("\n-----------------------------------res\n"+res)
+#                     dialogue = dialogue + "AI助手：" + res + "\n"
+                    
+                    
+
+#                 ## 结果 data
+#                 data['dialogue'] = dialogue
+#                 data['model'] = llm.model_path
+#                 data['thinking'] = history
+                
+#                 data_list.append(data)
+
+#         ### 保存结果
+#         data_list = list_to_dict(data_list)
+#         with open(result_path, 'w', encoding='utf-8') as file:
+#             json.dump(data_list, file,indent=4,ensure_ascii=False)
+
+#         torch.cuda.empty_cache()
+#         accelerator.wait_for_everyone()
+
+
+def mt_dialogue_gen(data_path, llm, result_path):
+    accelerator = Accelerator()
+
+    # 临时断点文件（JSONL）
+    tmp_path = result_path + ".tmp"
+
+    # dataset
     dataset = TestDataset(data_path)
-    # 注意 batch_size
     val_dataloader = DataLoader(dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=dataset.collate_fn)
     val_dataloader = accelerator.prepare(val_dataloader)
     accelerator.wait_for_everyone()
 
+    # 判断已处理样本数
+    processed = 0
+    if os.path.exists(tmp_path):
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            processed = sum(1 for _ in f)
+    accelerator.print(f"Already processed: {processed}")
+
     with torch.no_grad():
         dataloader_iterator = tqdm(val_dataloader, total=len(val_dataloader)) if accelerator.is_main_process else val_dataloader
         print(dataloader_iterator)
-
-        data_list = []  ## 多个数据的对话列表。
+        idx = 0
         for batch in dataloader_iterator:
             for data in batch:
-                dialogue = ""  ## 用于记录对话
+
+                # 跳过已处理的数据
+                if idx < processed:
+                    idx += 1
+                    continue
+
+                dialogue = ""
                 model_prompt = data["model_prompt"]
-                
-                print("\n----------------------------------- model_prompt\n" + model_prompt)
-                query=data["needs"]
-                dialogue = dialogue + "用户：" + query + "\n"
-                print("\n-----------------------------------first query\n"+query)
+                query = data["needs"]
+                dialogue += "用户：" + query + "\n"
+
                 history = []
-                for round in range(1,2):#单轮问答
-                    data["dialogue_round"] = round  ## 用于记录轮次 
-                    ## 本地AI 助手生成回复
-                    # res,history = llm.gen(query,history,model_prompt)
-                    res = llm.gen(query,history,model_prompt)
+                for round in range(1, 2):
+                    data["dialogue_round"] = round
+                    res, history = llm.gen(query, history, model_prompt)
                     res = res.strip()
                     print("\n-----------------------------------res\n"+res)
-                    dialogue = dialogue + "AI助手：" + res + "\n"
                     
-                    
+                    dialogue += "AI助手：" + res + "\n"
 
-                ## 结果 data
-                data['dialogue'] = dialogue
-                data['model'] = llm.model_path
-                data_list.append(data)
+                # 保存（追加写 JSONL）
+                output = {
+                    "dialogue": dialogue,
+                    "model": llm.model_path,
+                    "thinking": history,
+                }
+                output.update(data)
 
-        ### 保存结果
-        data_list = list_to_dict(data_list)
-        with open(result_path, 'w', encoding='utf-8') as file:
-            json.dump(data_list, file,indent=4,ensure_ascii=False)
+                if accelerator.is_main_process:
+                    with open(tmp_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(output, ensure_ascii=False) + "\n")
 
-        torch.cuda.empty_cache()
+                idx += 1
+
         accelerator.wait_for_everyone()
 
+    # 主进程负责转换为最终 JSON 格式
+    if accelerator.is_main_process:
+        data_list = []
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            for line in f:
+                data_list.append(json.loads(line))
 
+        # 转为你的原格式
+        data_list = list_to_dict(data_list)
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(data_list, f, indent=4, ensure_ascii=False)
+
+        # 清理断点文件
+        os.remove(tmp_path)
+
+    torch.cuda.empty_cache()
+    accelerator.wait_for_everyone()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Args of sft')
@@ -457,16 +533,21 @@ if __name__ == '__main__':
     # parser.add_argument("--api_key", type=str, required=True, help="OpenAI API key.")
     # parser.add_argument("--api_url", type=str, default="https://api.openai.com/v1/chat/completions", help="OpenAI API URL.")
     parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--max_turn', default=5, type=int)
+    parser.add_argument('--max_turn', default=4, type=int)
+    parser.add_argument('--topk', default=4, type=int)
     parser.add_argument('--retriever', default=False, type=bool)
     parser.add_argument('--retrieve_path', default="http://127.0.0.1:8006/retrieve", type=str)
     
     args = parser.parse_args()
     set_seed(args.seed)
     model_path=args.model_path
+    
 
     if args.retriever:
-        llm=LLM_retriever(model_path,retrieve_path=args.retrieve_path,max_turn=args.max_turn)
+        llm=LLM_retriever(model_path,
+                          retrieve_path=args.retrieve_path,
+                          max_turn=args.max_turn,
+                          topk=args.topk)
     else:
         llm= LLM(model_path)
 
