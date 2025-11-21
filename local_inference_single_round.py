@@ -349,8 +349,12 @@ class LLM_retriever:
             elif action=="search":
                 tmp_query = self._extract_query(output_text)
                 print(f'[debug] search query="{tmp_query}"')
-                if tmp_query and( cnt < self.max_turn):
-                    
+                if search_word_before==tmp_query:#重复检索
+                    instruct="如果我想给出最终回答，应该把答案放在 <answer> 和 </answer>之间。 \
+                        如果需要继续搜索，应该把新的关键词放在<search> 和 </search>之间。重新思考。"
+                
+                elif tmp_query and( cnt < self.max_turn):
+                    search_word_before=tmp_query
                     search_results = self._search(tmp_query)
                 
                 elif cnt==self.max_turn:
