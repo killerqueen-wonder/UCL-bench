@@ -322,6 +322,8 @@ class LLM_retriever:
         print('\n\n################# [Start Reasoning + Searching] ##################\n\n')
         print(f'**[prompt]:{prompt}')
 
+        search_word_before=[]
+
         while True:
             input_ids = self.tokenizer.encode(prompt, return_tensors='pt').to(self.device)
 
