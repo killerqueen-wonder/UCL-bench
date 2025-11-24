@@ -202,8 +202,8 @@ def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=
         total_result[task_name] = task_evaluate_temp
     return total_result
 
-def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=None, gpt_url=None):
-    """生成评测结果，忽略api_key和gpt_url参数"""
+def generate_evaluate_results(chatgpt_result, model_result, datasource):
+    """生成评测结果"""
     task_names = datasource.keys()
 
     total_result = {}
