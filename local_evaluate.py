@@ -150,7 +150,7 @@ def call_evaluate(chatgpt_dialogue, model_dialogue, information, needs, evaluati
     return input_text, evaluation_result, score
 
 def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=None, gpt_url=None):
-    """生成评测结果，忽略api_key和gpt_url参数"""
+    """生成评测结果"""
     task_names = datasource.keys()
 
     total_result = {}
@@ -176,7 +176,7 @@ def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=
                     ## 第一个是 chatgpt 
                     evaluate_prompt, evaluate_result, evaluate_score = call_evaluate(
                         chatgpt_item["dialogue"].strip(),
-                        model_item["dialogue"].strip(),
+                        model_item["thinking"].strip(),
                         information,
                         needs,
                         evaluation_hints,
@@ -191,7 +191,7 @@ def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=
                     evaluation_temp["information"] = information
                     evaluation_temp["needs"] = needs
                     evaluation_temp["chatgpt_dialogue"] = chatgpt_item["dialogue"]
-                    evaluation_temp["model_dialogue"] = model_item["dialogue"]
+                    evaluation_temp["model_dialogue"] = model_item["thingking"]
                     evaluation_temp["evaluation_prompt"] = evaluate_prompt
                     evaluation_temp["evaluation_result"] = evaluate_result
                     evaluation_temp["evaluation_score"] = evaluate_score
@@ -202,7 +202,7 @@ def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=
     return total_result
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Args of sft')
+    parser = argparse.ArgumentParser(description='')
     # Model Args
     parser.add_argument('--chatgpt_result_path', type=str)
     parser.add_argument('--model_result_path', type=str)
