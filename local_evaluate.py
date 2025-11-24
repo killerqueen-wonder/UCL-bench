@@ -7,6 +7,7 @@ from retrying import retry
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from tqdm import tqdm
+import time
 
 # 加载本地模型和tokenizer
 model_name = "Qwen/Qwen2.5-8B-Instruct"  # 根据实际路径修改
@@ -202,8 +203,22 @@ def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=
         total_result[task_name] = task_evaluate_temp
     return total_result
 
-def generate_evaluate_results(chatgpt_result, model_result, datasource):
-    """生成评测结果"""
+def format_time(seconds):
+    """将秒数格式化为易读的时间字符串"""
+    if seconds < 60:
+        return f"{seconds:.0f}秒"
+    elif seconds < 3600:
+        minutes = seconds // 60
+        seconds = seconds % 60
+        return f"{minutes:.0f}分{seconds:.0f}秒"
+    else:
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        seconds = seconds % 60
+        return f"{hours:.0f}时{minutes:.0f}分{seconds:.0f}秒"
+
+def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=None, gpt_url=None):
+    """生成评测结果，忽略api_key和gpt_url参数"""
     task_names = datasource.keys()
 
     total_result = {}
@@ -222,15 +237,29 @@ def generate_evaluate_results(chatgpt_result, model_result, datasource):
     
     print(f"总评测任务数: {total_tasks}")
     
-    # 创建总体进度条
-    global_pbar = tqdm(total=total_tasks, desc="总体进度", position=0)
+    # 记录开始时间
+    start_time = time.time()
+    
+    # 创建总体进度条，显示预计剩余时间
+    global_pbar = tqdm(
+        total=total_tasks, 
+        desc="总体进度", 
+        position=0,
+        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+    )
     
     for task_name in task_names:
         print(f"\n开始处理任务: {task_name}")
         task_evaluate_temp = []
         
-        # 为当前任务创建进度条
-        task_pbar = tqdm(total=task_progress_info[task_name], desc=f"{task_name[:15]:<15}", position=1, leave=False)
+        # 为当前任务创建进度条，显示预计剩余时间
+        task_pbar = tqdm(
+            total=task_progress_info[task_name], 
+            desc=f"{task_name[:15]:<15}", 
+            position=1, 
+            leave=False,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+        )
         
         for chatgpt_item in chatgpt_result[task_name]:
             for model_item in model_result[task_name]:
@@ -262,8 +291,18 @@ def generate_evaluate_results(chatgpt_result, model_result, datasource):
                     current_progress = global_pbar.n + 1
                     progress_percent = (current_progress / total_tasks) * 100
                     
+                    # 计算预计剩余时间
+                    elapsed_time = time.time() - start_time
+                    if current_progress > 0:
+                        time_per_task = elapsed_time / current_progress
+                        remaining_time = time_per_task * (total_tasks - current_progress)
+                        eta_str = format_time(remaining_time)
+                    else:
+                        eta_str = "计算中..."
+                    
                     print("--------------------------------------------------")
                     print(f"进度: {current_progress}/{total_tasks} ({progress_percent:.1f}%)")
+                    print(f"预计剩余时间: {eta_str}")
                     print(f"任务: {task_name} - ID: {chatgpt_item['id']}")
                     print(f"评测结果: {evaluate_result}")
                     print(f"得分: {evaluate_score}")
@@ -292,9 +331,15 @@ def generate_evaluate_results(chatgpt_result, model_result, datasource):
     
     # 关闭总体进度条
     global_pbar.close()
+    
+    # 计算总耗时
+    total_elapsed_time = time.time() - start_time
     print(f"\n所有任务完成! 总共处理了 {total_tasks} 个评测")
+    print(f"总耗时: {format_time(total_elapsed_time)}")
+    print(f"平均每个任务耗时: {format_time(total_elapsed_time / total_tasks)}")
     
     return total_result
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='')
