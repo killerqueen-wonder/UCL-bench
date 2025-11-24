@@ -6,6 +6,7 @@ import threading
 from retrying import retry
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
+from tqdm import tqdm
 
 # 加载本地模型和tokenizer
 model_name = "Qwen/Qwen2.5-8B-Instruct"  # 根据实际路径修改
@@ -199,6 +200,100 @@ def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=
                     task_evaluate_temp.append(evaluation_temp)
 
         total_result[task_name] = task_evaluate_temp
+    return total_result
+
+def generate_evaluate_results(chatgpt_result, model_result, datasource, api_key=None, gpt_url=None):
+    """生成评测结果，忽略api_key和gpt_url参数"""
+    task_names = datasource.keys()
+
+    total_result = {}
+    
+    # 计算总任务数用于进度条
+    total_tasks = 0
+    task_progress_info = {}
+    for task_name in task_names:
+        task_count = 0
+        for chatgpt_item in chatgpt_result[task_name]:
+            for model_item in model_result[task_name]:
+                if chatgpt_item["id"] == model_item["id"] and chatgpt_item["task_name"] == model_item["task_name"]:
+                    task_count += 1
+        task_progress_info[task_name] = task_count
+        total_tasks += task_count
+    
+    print(f"总评测任务数: {total_tasks}")
+    
+    # 创建总体进度条
+    global_pbar = tqdm(total=total_tasks, desc="总体进度", position=0)
+    
+    for task_name in task_names:
+        print(f"\n开始处理任务: {task_name}")
+        task_evaluate_temp = []
+        
+        # 为当前任务创建进度条
+        task_pbar = tqdm(total=task_progress_info[task_name], desc=f"{task_name[:15]:<15}", position=1, leave=False)
+        
+        for chatgpt_item in chatgpt_result[task_name]:
+            for model_item in model_result[task_name]:
+                ## 匹配到对应数据。
+                if chatgpt_item["id"] == model_item["id"] and chatgpt_item["task_name"] == model_item["task_name"]:
+                    ## 输出 结果。 score 为 [x,y] 前一个为 chatgpt ，后一个为 model 分数。
+                    evaluation_temp = {}  ## 存储一条数据的评估结果
+
+                    ## 找到源数据的 evaluation_points , information , needs 
+                    for data in datasource[task_name]:
+                        if data["id"] == chatgpt_item["id"]:
+                            evaluation_prompt = data["evaluation_prompt"]
+                            evaluation_hints = data["evaluation_hints"]
+                            information = data["information"]
+                            needs  = data["needs"]
+                            break
+                    
+                    ## 第一个是 chatgpt 
+                    evaluate_prompt, evaluate_result, evaluate_score = call_evaluate(
+                        chatgpt_item["dialogue"].strip(),
+                        model_item["dialogue"].strip(),
+                        information,
+                        needs,
+                        evaluation_hints,
+                        evaluation_prompt
+                    )
+                    
+                    # 更新进度条描述
+                    current_progress = global_pbar.n + 1
+                    progress_percent = (current_progress / total_tasks) * 100
+                    
+                    print("--------------------------------------------------")
+                    print(f"进度: {current_progress}/{total_tasks} ({progress_percent:.1f}%)")
+                    print(f"任务: {task_name} - ID: {chatgpt_item['id']}")
+                    print(f"评测结果: {evaluate_result}")
+                    print(f"得分: {evaluate_score}")
+                    print("--------------------------------------------------")
+                    
+                    evaluation_temp["task_name"] = chatgpt_item["task_name"]
+                    evaluation_temp["id"] = chatgpt_item["id"]
+                    evaluation_temp["evaluation_hints"] = evaluation_hints
+                    evaluation_temp["information"] = information
+                    evaluation_temp["needs"] = needs
+                    evaluation_temp["chatgpt_dialogue"] = chatgpt_item["dialogue"]
+                    evaluation_temp["model_dialogue"] = model_item["dialogue"]
+                    evaluation_temp["evaluation_prompt"] = evaluate_prompt
+                    evaluation_temp["evaluation_result"] = evaluate_result
+                    evaluation_temp["evaluation_score"] = evaluate_score
+
+                    task_evaluate_temp.append(evaluation_temp)
+                    
+                    # 更新进度条
+                    global_pbar.update(1)
+                    task_pbar.update(1)
+        
+        # 关闭任务进度条
+        task_pbar.close()
+        total_result[task_name] = task_evaluate_temp
+    
+    # 关闭总体进度条
+    global_pbar.close()
+    print(f"\n所有任务完成! 总共处理了 {total_tasks} 个评测")
+    
     return total_result
 
 if __name__ == "__main__":
