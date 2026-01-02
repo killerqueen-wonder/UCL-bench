@@ -317,7 +317,7 @@ class LLM_retriever:
         
         
         prompt = system_prompt
-        history.append(prompt)
+        # history.append(prompt)
         cnt = 0
         print('\n\n################# [Start Reasoning + Searching] ##################\n\n')
         print(f'**[prompt]:{prompt}')

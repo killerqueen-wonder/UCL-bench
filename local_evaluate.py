@@ -64,7 +64,7 @@ def call_local_model(messages, max_length=8192):
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
-                        max_new_tokens=1024,
+                        max_new_tokens=2048,
                         temperature=0.2,
                         do_sample=True,
                         pad_token_id=tokenizer.eos_token_id,
