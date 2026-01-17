@@ -9,6 +9,9 @@ import torch
 from tqdm import tqdm
 import time
 
+'''
+LLM as judge 评测打分
+'''
 # 加载本地模型和tokenizer
 model_name = "Qwen/Qwen2.5-8B-Instruct"  # 根据实际路径修改
 tokenizer = None

@@ -14,7 +14,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 import re
 import requests
 
-
+'''
+本地模型输出回答
+'''
 
 
 #从本地模型输出各评测集的回答，支持retriever
@@ -390,62 +392,6 @@ class LLM_retriever:
             return response,history
 
 
-
-
-        
-
-
-# def mt_dialogue_gen(data_path,llm,result_path):
-#     accelerator = Accelerator()
-#     # torch.cuda.set_device(accelerator.process_index)
-    
-#     ## dataset 
-#     dataset = TestDataset(data_path)
-#     # 注意 batch_size
-#     val_dataloader = DataLoader(dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=dataset.collate_fn)
-#     val_dataloader = accelerator.prepare(val_dataloader)
-#     accelerator.wait_for_everyone()
-
-#     with torch.no_grad():
-#         dataloader_iterator = tqdm(val_dataloader, total=len(val_dataloader)) if accelerator.is_main_process else val_dataloader
-#         print(dataloader_iterator)
-
-#         data_list = []  ## 多个数据的对话列表。
-#         for batch in dataloader_iterator:
-#             for data in batch:
-#                 dialogue = ""  ## 用于记录对话
-#                 model_prompt = data["model_prompt"]
-                
-#                 print("\n----------------------------------- model_prompt\n" + model_prompt)
-#                 query=data["needs"]
-#                 dialogue = dialogue + "用户：" + query + "\n"
-#                 print("\n-----------------------------------first query\n"+query)
-#                 history = []
-#                 for round in range(1,2):#单轮问答
-#                     data["dialogue_round"] = round  ## 用于记录轮次 
-#                     ## 本地AI 助手生成回复
-#                     res,history = llm.gen(query,history,model_prompt)
-#                     # res = llm.gen(query,history,model_prompt)
-#                     res = res.strip()
-#                     print("\n-----------------------------------res\n"+res)
-#                     dialogue = dialogue + "AI助手：" + res + "\n"
-                    
-                    
-
-#                 ## 结果 data
-#                 data['dialogue'] = dialogue
-#                 data['model'] = llm.model_path
-#                 data['thinking'] = history
-                
-#                 data_list.append(data)
-
-#         ### 保存结果
-#         data_list = list_to_dict(data_list)
-#         with open(result_path, 'w', encoding='utf-8') as file:
-#             json.dump(data_list, file,indent=4,ensure_ascii=False)
-
-#         torch.cuda.empty_cache()
-#         accelerator.wait_for_everyone()
 
 
 def mt_dialogue_gen(data_path, llm, result_path):
