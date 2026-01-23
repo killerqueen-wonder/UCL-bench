@@ -130,15 +130,6 @@ main() {
     # 验证模型路径
     validate_model_path
     
-    # 步骤1: 激活conda环境
-    echo -e "${YELLOW}[1/5] 激活conda环境...${NC}"
-    conda activate searchr1_new
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}错误: 无法激活conda环境 'searchr1_new'${NC}"
-        exit 1
-    fi
-    
     # 步骤2: 切换到项目目录并拉取最新代码
     echo -e "${YELLOW}[2/5] 切换到项目目录并更新代码...${NC}"
     cd /caizhenyang/panghuaiwen/legal_LLM/UCL-bench
