@@ -106,7 +106,6 @@ validate_model_path() {
     # 检查是否是目录
     if [ -d "$MODEL_PATH" ]; then
         echo -e "${BLUE}模型类型: 目录${NC}"
-        echo -e "${BLUE}目录内容:${NC}"
         ls -la "$MODEL_PATH" | head -10
     elif [ -f "$MODEL_PATH" ]; then
         echo -e "${BLUE}模型类型: 文件${NC}"
