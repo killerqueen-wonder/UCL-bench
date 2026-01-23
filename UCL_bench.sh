@@ -130,11 +130,6 @@ main() {
     # 验证模型路径
     validate_model_path
     
-    # 步骤2: 切换到项目目录并拉取最新代码
-    echo -e "${YELLOW}[2/5] 切换到项目目录并更新代码...${NC}"
-    cd /caizhenyang/panghuaiwen/legal_LLM/UCL-bench
-    git pull origin main
-    
     # 步骤3: 生成动态文件名
     echo -e "${YELLOW}[3/5] 生成输出文件名...${NC}"
     
