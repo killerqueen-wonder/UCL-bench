@@ -181,7 +181,7 @@ main() {
     # 步骤5: 运行评估脚本
     echo -e "${YELLOW}[5/5] 运行评估脚本...${NC}"
     python "/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/UCL-bench/local_evaluate_thinking.py" \
-        --chatgpt_result_path "/caizhenyang/panghuaiwen/legal_LLM/dataset/result/res_result/qwen3_8B_eval_result.json" \
+        --chatgpt_result_path "/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/dataset/result/res_result/qwen3_8B_eval_result.json" \
         --model_result_path "$MODEL_RESULT_PATH" \
         --datasource_path "/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/UCL-bench/dataset/legal_data_sample.json" \
         --result_path "$SCORE_RESULT_PATH" \
