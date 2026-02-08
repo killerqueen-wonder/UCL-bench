@@ -19,6 +19,8 @@ NC='\033[0m' # No Color
 TEST_MODEL=""
 DATE=""
 MODEL_PATH=""
+# 默认检索路径
+RETRIEVE_URL="http://127.0.0.1:8007/retrieve"
 
 # 显示帮助信息
 show_help() {
@@ -28,6 +30,7 @@ show_help() {
     echo "  -d, --date         日期标识 (如: 0123)"
     echo "  -p, --model_path   完整模型路径 (必需)"
     echo "                     示例: /F00120250029/lixiang_share/panghuaiwen_share/legal_R1/model/RL_ckp/legal_exam-ppo-qwen3-8b-RL-2.0.3/global_step_40/actor_merge"
+    echo "  -r, --retrieve_url   检索服务地址 (可选，默认: http://127.0.0.1:8007/retrieve)"
     echo "  -h, --help         显示此帮助信息"
     echo ""
     echo "示例:"
@@ -49,6 +52,10 @@ parse_args() {
                 ;;
             -p|--model_path)
                 MODEL_PATH="$2"
+                shift 2
+                ;;
+            -r|--retrieve_url)
+                RETRIEVE_URL="$2"
                 shift 2
                 ;;
             -h|--help)
@@ -169,7 +176,7 @@ main() {
         --retriever true \
         --topk 10 \
         --max_turn 12 \
-        --retrieve_path "http://127.0.0.1:8007/retrieve"
+        --retrieve_path "$RETRIEVE_URL"
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}错误: 推理脚本执行失败${NC}"
