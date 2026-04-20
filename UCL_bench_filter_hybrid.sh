@@ -20,7 +20,7 @@ TEST_MODEL=""
 DATE=""
 MODEL_PATH=""
 # 默认检索路径
-RETRIEVE_URL="http://127.0.0.1:8007/retrieve"
+RETRIEVE_URL="http://127.0.0.1:8005/retrieve"
 
 # 显示帮助信息
 show_help() {
@@ -136,7 +136,7 @@ main() {
     tmux new -d -s vllm_summarizer "export CUDA_VISIBLE_DEVICES=1; conda activate vllm_server; export LD_LIBRARY_PATH=\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH; python -m vllm.entrypoints.openai.api_server --model /data/panghuaiwen/legal_R1/model/Qwen/Qwen3-8B --served-model-name Qwen3-8B --port 8008 --gpu-memory-utilization 0.4 --max-model-len 8000"
     
     # 启动供 Eval Judge 评测使用的模型 (挂载在显卡 3，端口 8009)
-    tmux new -d -s vllm_evaluator "export CUDA_VISIBLE_DEVICES=3; conda activate vllm_server; export LD_LIBRARY_PATH=\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH; python -m vllm.entrypoints.openai.api_server --model /data/panghuaiwen/legal_R1/model/Qwen/Qwen2.5-8B-Instruct --served-model-name Qwen2.5-8B-Instruct --port 8009 --gpu-memory-utilization 0.4 --max-model-len 16000"
+    tmux new -d -s vllm_evaluator "export CUDA_VISIBLE_DEVICES=3; conda activate vllm_server; export LD_LIBRARY_PATH=\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH; python -m vllm.entrypoints.openai.api_server --model /data/panghuaiwen/legal_R1/model/Qwen/Qwen3-8B --served-model-name Qwen2.5-8B-Instruct --port 8009 --gpu-memory-utilization 0.4 --max-model-len 16000"
 
     echo -e "${YELLOW}等待服务热身 (30s)...${NC}"
     sleep 30
