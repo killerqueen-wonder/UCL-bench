@@ -120,93 +120,50 @@ validate_model_path() {
     fi
 }
 
-# 主函数
 main() {
-    # 解析参数
     parse_args "$@"
     
-    echo -e "${GREEN}============================================${NC}"
-    echo -e "${GREEN}开始法律LLM评估流程${NC}"
-    echo -e "${GREEN}模型标识: $TEST_MODEL${NC}"
-    echo -e "${GREEN}日期标识: $DATE${NC}"
-    echo -e "${GREEN}模型路径: $MODEL_PATH${NC}"
-    echo -e "${GREEN}============================================${NC}"
-    
-    # 验证模型路径
-    validate_model_path
-    
-    # 步骤3: 生成动态文件名
-    echo -e "${YELLOW}[3/5] 生成输出文件名...${NC}"
-    
-    # 从模型路径中提取有用的信息用于文件名
-    # 尝试从路径中提取更具体的模型信息
-    if [[ "$MODEL_PATH" =~ legal_exam-ppo-qwen3-8b-RL-([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-        MODEL_VERSION="${BASH_REMATCH[1]}"
-        echo -e "${BLUE}从路径中提取到模型版本: $MODEL_VERSION${NC}"
-        FILE_PREFIX="qwen3-8B_RL${MODEL_VERSION}"
-    elif [[ "$MODEL_PATH" =~ legal_exam-ppo-qwen3-8b-([^/]+) ]]; then
-        MODEL_TYPE="${BASH_REMATCH[1]}"
-        echo -e "${BLUE}从路径中提取到模型类型: $MODEL_TYPE${NC}"
-        FILE_PREFIX="qwen3-8B_${MODEL_TYPE}"
-    else
-        # 使用test_model参数
-        FILE_PREFIX="qwen3-8B_${TEST_MODEL}"
-    fi
-    
-    # 中间结果文件（推理结果）
+    FILE_PREFIX="qwen3-8B_${TEST_MODEL}"
     MODEL_RESULT_FILE="${FILE_PREFIX}_eval_result_${DATE}.json"
-    MODEL_RESULT_PATH="/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/dataset/result/res_result/${MODEL_RESULT_FILE}"
-    
-    # 最终评分结果文件
+    MODEL_RESULT_PATH="/data/panghuaiwen/legal_R1/dataset/result/res_result/${MODEL_RESULT_FILE}"
     SCORE_RESULT_FILE="${FILE_PREFIX}_score_${DATE}.json"
-    SCORE_RESULT_PATH="/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/dataset/result/score_result/${SCORE_RESULT_FILE}"
+    SCORE_RESULT_PATH="/data/panghuaiwen/legal_R1/dataset/result/score_result/${SCORE_RESULT_FILE}"
+
+    # =============== 核心新增：启动额外的 vLLM 评测与总结服务 =============== #
+    echo -e "${YELLOW}[系统调度] 正在启动辅助大模型服务...${NC}"
     
-    echo -e "${BLUE}推理结果文件: $MODEL_RESULT_FILE${NC}"
-    echo -e "${BLUE}评分结果文件: $SCORE_RESULT_FILE${NC}"
+    # 启动供 Summary 总结使用的模型 (挂载在显卡 1，端口 8008)
+    tmux new -d -s vllm_summarizer "export CUDA_VISIBLE_DEVICES=1; conda activate vllm_server; export LD_LIBRARY_PATH=\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH; python -m vllm.entrypoints.openai.api_server --model /data/panghuaiwen/legal_R1/model/Qwen/Qwen3-8B --served-model-name Qwen3-8B --port 8008 --gpu-memory-utilization 0.4 --max-model-len 8000"
     
-    # 步骤4: 运行推理脚本
-    echo -e "${YELLOW}[4/5] 运行推理脚本...${NC}"
-    echo -e "${BLUE}使用的模型路径: $MODEL_PATH${NC}"
+    # 启动供 Eval Judge 评测使用的模型 (挂载在显卡 3，端口 8009)
+    tmux new -d -s vllm_evaluator "export CUDA_VISIBLE_DEVICES=3; conda activate vllm_server; export LD_LIBRARY_PATH=\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH; python -m vllm.entrypoints.openai.api_server --model /data/panghuaiwen/legal_R1/model/Qwen/Qwen2.5-8B-Instruct --served-model-name Qwen2.5-8B-Instruct --port 8009 --gpu-memory-utilization 0.4 --max-model-len 16000"
+
+    echo -e "${YELLOW}等待服务热身 (30s)...${NC}"
+    sleep 30
+
+    # =============== 推理阶段（并行） =============== #
+    echo -e "${YELLOW}[4/5] 运行并行推理脚本...${NC}"
     
-    python "/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/UCL-bench/local_inference_single_round.py" \
-        --data_path "/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/UCL-bench/dataset/legal_data_sample.json" \
+    # 使用 accelerate 多卡并行提速本地生成
+    accelerate launch --multi_gpu --num_processes=4 "/data/panghuaiwen/legal_R1/UCL-bench/local_inference_single_round.py" \
+        --data_path "/data/panghuaiwen/legal_R1/UCL-bench/dataset/legal_data_sample.json" \
         --model_path "$MODEL_PATH" \
         --result_path "$MODEL_RESULT_PATH" \
-        --model_name "no_GPT" \
         --retriever true \
         --topk 10 \
         --max_turn 12 \
-        --retrieve_path "$RETRIEVE_URL"
+        --retrieve_path "$RETRIEVE_URL" \
+        --summary_port 8008
     
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}错误: 推理脚本执行失败${NC}"
-        exit 1
-    fi
-    
-    echo -e "${GREEN}推理完成，结果保存在: $MODEL_RESULT_PATH${NC}"
-    
-    # 步骤5: 运行评估脚本
-    echo -e "${YELLOW}[5/5] 运行评估脚本...${NC}"
-    python "/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/UCL-bench/local_evaluate_thinking.py" \
-        --chatgpt_result_path "/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/dataset/result/res_result/qwen3_8B_eval_result.json" \
+    # =============== 评测阶段（并发） =============== #
+    echo -e "${YELLOW}[5/5] 运行高并发评估脚本...${NC}"
+    python "/data/panghuaiwen/legal_R1/UCL-bench/local_evaluate_thinking.py" \
+        --chatgpt_result_path "/data/panghuaiwen/legal_R1/dataset/result/res_result/qwen3_8B_eval_result.json" \
         --model_result_path "$MODEL_RESULT_PATH" \
-        --datasource_path "/F00120250029/lixiang_share/panghuaiwen_share/legal_R1/UCL-bench/dataset/legal_data_sample.json" \
+        --datasource_path "/data/panghuaiwen/legal_R1/UCL-bench/dataset/legal_data_sample.json" \
         --result_path "$SCORE_RESULT_PATH" \
-        --model_path "/F00120250029/lixiang_share/Models/Qwen3-8B"
+        --judge_port 8009
     
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}错误: 评估脚本执行失败${NC}"
-        exit 1
-    fi
-    
-    echo -e "${GREEN}============================================${NC}"
-    echo -e "${GREEN}评估流程完成！${NC}"
-    echo -e "${GREEN}模型标识: $TEST_MODEL${NC}"
-    echo -e "${GREEN}模型路径: $MODEL_PATH${NC}"
-    echo -e "${GREEN}推理结果: $MODEL_RESULT_PATH${NC}"
-    echo -e "${GREEN}评分结果: $SCORE_RESULT_PATH${NC}"
-    echo -e "${GREEN}============================================${NC}"
+    echo -e "${GREEN}管道全流程执行完毕！${NC}"
 }
-
-# 运行主函数
 main "$@"

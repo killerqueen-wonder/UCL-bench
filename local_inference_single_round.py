@@ -3,23 +3,15 @@ import json
 import torch
 import logging
 import argparse
+import requests
+import re
 from transformers.generation.utils import GenerationConfig
 from tqdm import tqdm
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
 import transformers
 from transformers import set_seed
-import json
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel 
-import re
-import requests
 
-'''
-本地模型输出回答
-'''
-
-
-#从本地模型输出各评测集的回答，支持retriever
 os.umask(0)
 logger = logging.getLogger(__name__)
 logging.basicConfig(level='INFO')
@@ -34,20 +26,14 @@ def list_to_dict(data_list):
             classified_dict[task_name].append(item)
     return classified_dict
 
-
 class TestDataset(torch.utils.data.Dataset):
     def __init__(self, data_path):
-        self.query_prompt = ""
-        raw_data = {}
-        ### dataset 已经 load json 文件了
         with open(data_path) as f:
             raw_data = json.load(f)
         self.dataset = [item for sublist in raw_data.values() for item in sublist]  
 
-    def __getitem__(self ,  index):
-        # 在这里实现获取单个样本的逻辑
-        sample = self.dataset[index]
-        return sample
+    def __getitem__(self, index):
+        return self.dataset[index]
 
     def __len__(self):
         return len(self.dataset)
@@ -55,193 +41,115 @@ class TestDataset(torch.utils.data.Dataset):
     def collate_fn(self, batch):
         return batch
 
-class LLM:
-    def __init__(self,model_path):
-        self.model_path = model_path
-        print("--------------加载模型路径为：---------------\n",model_path)
-        ## 定义 model 变量 
-        if "huatuo" in args.model_path.lower():
-            model = AutoModelForCausalLM.from_pretrained(args.model_path, device_map="auto", torch_dtype=torch.float16, trust_remote_code=True)
-            model.generation_config = GenerationConfig.from_pretrained(args.model_path)
-        else:
-            model = AutoModelForCausalLM.from_pretrained(args.model_path, trust_remote_code=True, torch_dtype=torch.bfloat16)
-        if "Qwen-72B-Chat" not in args.model_path and "deepseek" not in args.model_path and "DISC-LawLLM" not in args.model_path:
-            model.cuda().eval()
-        
+# 核心系统指令更新
+NEW_SYSTEM_PROMPT = """你是一个严谨且专业的法律AI助手。你的任务是通过逐步思考用户请求并回答法律问题。回答必须基于事实，严禁编造法律条文或案例。
 
-        if 'PMC_LLaMA_13B' in args.model_path or 'zhongjing' in args.model_path:
-            left_tokenizer = transformers.LlamaTokenizer.from_pretrained(args.model_path, padding_side='left')
-        else:
-            left_tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, padding_side='left')
+### 核心指令：
+0. **第一步思考**: 识别用户请求的核心法律实体，关键事实，并且提出可能涉及的法律条文。
+1. **判断是否需要检索**：你可以使用检索工具。如果问题基础且你非常有把握，也可以不使用工具直接作答。
+2. **支持的检索工具**（两种）：
+   - **法律检索**：需要确认某项罪名的具体刑期、适用条件、或者某一司法解释的原文时使用。
+   - 不要试图一次性把所有关键词都搜完。每次最多只查找两项最相关的法律。
+   - 先搜索最核心的概念。不要用缩写词，尽量用完整的，最有特点的，区别于其他法条的关键词。搜索关键词示例：“刑法 盗窃罪”、“最高人民法院关于适用〈民事诉讼法〉的解释 第501条”。
+   - 如果你搜索了三次依然没有找到相关条文，请直接承认未找到，修改思考思路，搜索其他条文。不要编造内容。
+   - **类案检索**：用来检索相似刑事案件的判例报告（案例库只有刑事），以预测判决结果或量刑，提高置信度。
+3. **如何调用工具**：如果你决定检索，**必须**输出一个严格的 JSON 字符串，并用 `<search>` 和 `</search>` 标签包裹。
+   - 调用【法律检索】示例：
+     <search>
+     {
+       "检索类型": "法律检索",
+       "关键词": "刑法 第xxx条 盗窃罪",
+       "检索目的": "找到刑法中盗窃罪的刑期判定条文"
+     }
+     </search>
+   - 调用【类案检索】示例：
+     <search>
+     {
+       "检索类型": "类案检索",
+       "检索案情": "张三蒙面进入邻居家，偷走现金5000元并持刀威胁屋主。",
+       "罪名": ["盗窃罪", "抢劫罪"],
+       "其他情节": "自首悔过"
+     }
+     </search>
+4. **三段论推理**：接收到检索结果后，如果事实与法条匹配，必须使用 `<syllogism>` 标签生成三段论 JSON 分析。
+   - 大前提 (Major Premise)：指代适用的具体罪名或法条。绝对不要重复输出法条原文，使用占位符 [法条参考 X]。
+   - 小前提 (Minor Premise)：将用户平常的语言表述转化为专业的法言法语。
+   - 结论 (Conclusion)：案件事实是否符合该法条，如何定罪或量刑。
+5. **多轮迭代检索**：每次只输出一个 `<search>` 标签。
+6. **最终回答**：收集充分后，必须将最终推理结论包裹在 `<answer>` 和 `</answer>` 标签中。
 
-        if 'Qwen' in args.model_path:
-            left_tokenizer.pad_token_id = 151643
-            left_tokenizer.eos_token_id = 151643
-        if  left_tokenizer.pad_token is None:
-            # left_tokenizer.pad_token = '<PAD>'
-            left_tokenizer.pad_token = '</s>'
-        
-        self.model = model
-        self.left_tokenizer = left_tokenizer
-    
-    def gen(self, query , history = [], model_prompt=""):
-        
-        
-        if "qwen" in self.model_path.lower():
-            if history == [] :
-                history.append({"role":"system","content":model_prompt})
-            history.append({"role": "user", "content": query})
-
-            text = self.left_tokenizer.apply_chat_template(
-                history,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-
-            inputs = self.left_tokenizer(text, return_tensors="pt")
-            inputs = inputs.to('cuda')
-            response_ids = self.model.generate(**inputs, max_new_tokens=8000)[0][len(inputs.input_ids[0]):].tolist()
-            response = self.left_tokenizer.decode(response_ids, skip_special_tokens=False)
-            # response = self.left_tokenizer.decode(response_ids, skip_special_tokens=True)
-
-            # Update history
-            history.append({"role": "assistant", "content": response})
-            return response,history
-    
-
+以下是需要回答的问题：{question_text}
+"""
 
 import torch.nn.functional as F
 
 class StreamStopper:
-    """
-    流式生成检测 </search> 或 </answer>，停止生成。
-    """
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
-        self.buffer = ""  # 累积本次生成的新文本
+        self.buffer = "" 
         self.done = False
-        self.action = None  # "search" 或 "answer"
+        self.action = None
         self.output_text = ""
+        self.generated_ids = []
 
-    
     def process_token(self, token_id):
-        """
-        接收新生成的 token_id，累积到 generated_ids，并 decode 新增部分到 buffer。
-        同时检测 </search> 或 </answer> 停止。
-        """
-        # 保存 token_id 到生成列表
-        if not hasattr(self, "generated_ids"):
-            self.generated_ids = []
-
         self.generated_ids.append(token_id.item())
-
-        # decode 当前所有 token
         text = self.tokenizer.decode(self.generated_ids, skip_special_tokens=False)
-
-        # 取新生成的部分
-        new_text = text[len(self.buffer):]  # 只取新增文本
+        new_text = text[len(self.buffer):]
         self.buffer += new_text
 
-        # 检测 </search> 或 </answer>
         if "</search>" in self.buffer and not self.done:
             self.done = True
             self.action = "search"
-            # 输出从生成开始到 </search> 的内容
-            # self.output_text = self.buffer.split("</search>")[0] + "</search>"
             self.output_text = self.tokenizer.decode(self.generated_ids, skip_special_tokens=False).split("</search>")[0] + "</search>"
-
         elif "</answer>" in self.buffer and not self.done:
             self.done = True
             self.action = "answer"
-            # self.output_text = self.buffer.split("</answer>")[0] + "</answer>"
             self.output_text = self.tokenizer.decode(self.generated_ids, skip_special_tokens=False).split("</answer>")[0] + "</answer>"
 
-        return new_text  # 返回新增的可显示文本
-
-
+        return new_text
 
 @torch.no_grad()
-def stream_until_search(model, tokenizer, input_ids, 
-                        max_new_tokens=1500, 
-                        temperature=0.3,
-                        repetition_penalty = 1.2):
-    """
-    流式生成，检测 </search> 和 </answer>。
-    返回:
-        action: "search" 或 "answer"
-        output_text: 本轮生成内容，decode为文本
-    """
+def stream_until_search(model, tokenizer, input_ids, max_new_tokens=1500, temperature=0.3, repetition_penalty=1.2):
     stopper = StreamStopper(tokenizer)
-
     generated = input_ids
     past_key_values = None
 
     for _ in range(max_new_tokens):
-        # 模型前向
-        outputs = model(
-            generated if past_key_values is None else generated[:, -1:],
-            use_cache=True,
-            past_key_values=past_key_values
-        )
+        outputs = model(generated if past_key_values is None else generated[:, -1:], use_cache=True, past_key_values=past_key_values)
         logits = outputs.logits[:, -1, :]
         past_key_values = outputs.past_key_values
 
-        # 对每个 token 进行惩罚
-        for token_id in set(generated[0].tolist()):  # 用 set 避免重复遍历
-            logits[0, token_id] /= repetition_penalty  # 或者 logits[0, token_id] /= repetition_penalty
+        for token_id in set(generated[0].tolist()):
+            logits[0, token_id] /= repetition_penalty
 
-
-        # 采样下一个 token
         probs = F.softmax(logits / temperature, dim=-1)
         next_token = torch.multinomial(probs, num_samples=1)
-
-        # 处理 token
         stopper.process_token(next_token[0])
-        
-        # 追加 token
         generated = torch.cat((generated, next_token), dim=1)
 
-        # 检查是否停止
         if stopper.done:
             break
 
     return stopper.action, stopper.output_text
 
-
-
 class LLM_retriever:
-    """
-    实现一个“思考-检索-再思考-回答”的闭环生成系统。
-    """
-    def __init__(self, model_path, api_key=None, api_url=None, max_turn=5,retrieve_path="http://127.0.0.1:8006/retrieve",topk=3):
+    def __init__(self, model_path, retrieve_path, max_turn=5, topk=3):
         self.model_path = model_path
-        self.topk=topk
-        self.api_key = api_key
-        self.api_url = api_url
+        self.topk = topk
         self.retrieve_path = retrieve_path
-        self.max_turn=max_turn
-
-        print("--------------加载模型路径为：---------------\n", model_path)
-
+        self.max_turn = max_turn
         
-        # Initialize the tokenizer and model
-    
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
         self.model = transformers.AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16, device_map="auto")
 
-
-        # 特殊token设置
         if 'Qwen' in model_path:
             self.tokenizer.pad_token_id = 151643
             self.tokenizer.eos_token_id = 151643
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = '</s>'
 
-        # 停止条件定义
-        # self.target_sequences = ["</search>", " </search>", "</search>\n", " </search>\n", "</search>\n\n", " </search>\n\n"]
-
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.curr_eos = [151645, 151643]
         self.search_template = '\n\n{output_text}<information>{search_results}</information>\n\n'
 
     def _extract_query(self, text):
@@ -255,250 +163,164 @@ class LLM_retriever:
         return matches[-1] if matches else None
 
     def _search(self, query):
-        """调用本地检索服务"""
-        if not query or not query.strip():
-            print("[WARNING] Empty query passed to search function.")
-            return ""
-
+        if not query or not query.strip(): return ""
         payload = {"queries": [query], "topk": self.topk, "return_scores": True}
         try:
-            response = requests.post(
-                self.retrieve_path,
-                json=payload,
-                proxies={"http": None, "https": None},
-                timeout=10
-            )
+            response = requests.post(self.retrieve_path, json=payload, timeout=10)
             response.raise_for_status()
-            json_data = response.json()
-            results = json_data.get("result", [])
-        except requests.exceptions.Timeout:
-            print("[ERROR] Search request timed out.")
-            return ""
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Request failed: {e}")
-            return ""
-        except ValueError as e:
-            print(f"[ERROR] Failed to decode JSON: {e}")
+            results = response.json().get("result", [])
+        except Exception as e:
+            print(f"[ERROR] Search failed: {e}")
             return ""
 
-        if not results:
-            print("[INFO] No results returned from search.")
-            return ""
-
-        def _passages2string(retrieval_result):
-            format_reference = ''
-            for idx, doc_item in enumerate(retrieval_result):
-                            
-                content = doc_item['document']['content']
-                title = content.split("\n")[0]
-                text = "\n".join(content.split("\n")[1:])
-                format_reference += f"Doc {idx+1}(Title: {title}) {text}\n"
-            return format_reference
-
-        return _passages2string(results[0])
-
-    def gen(self, query ,history = [], model_prompt=""):
-        """执行完整的思考-检索-再思考-回答流程"""
+        if not results: return ""
         
+        format_reference = ''
+        for idx, doc_item in enumerate(results[0]):
+            content = doc_item['document']['content']
+            title = content.split("\n")[0]
+            text = "\n".join(content.split("\n")[1:])
+            format_reference += f"Doc {idx+1}(Title: {title}) {text}\n"
+        return format_reference
 
+    def gen(self, query, history=[], model_prompt=""):
         question = query.strip()
-        # model_prompt =model_prompt.strip()
-        if len(model_prompt):
-            question = model_prompt + question
-
-        system_prompt = (
-            "根据要求，回答问题。你必须遵守思考-检索-思考-回答的推理模式。\n"
-            "思考：对问题进行推理，尝试解答。推理过程中，如果你发现涉及某些法律条文，则进入检索步骤。\n"
-            "检索：请把需要检索的关键词放在 <search> 和 </search> 标签之间，调用搜索引擎。例如：<search> 民法典 盗窃罪 </search>。\n"
-            "系统将返回最相关的搜索结果，并置于 <information> 和 </information> 标签之间。根据返回的结果，继续下一步思考。\n"
-            "再次思考：基于检索结果，继续对问题进行推理。如果没有帮助，则修改关键词重新检索,不要重复检索已经检索过的关键词；如果有把握得到最终答案，则进入回答。\n"
-            "回答：注意！在 <answer> 和 </answer> 标签内提供最终答案。例如：<answer> 北京 </answer>\n"
-            f"以下是需要回答的问题：{question}\n"
-        )
-
+        if len(model_prompt): question = model_prompt + question
         
-        
-        prompt = system_prompt
-        # history.append(prompt)
+        prompt = NEW_SYSTEM_PROMPT.format(question_text=question)
         cnt = 0
-        print('\n\n################# [Start Reasoning + Searching] ##################\n\n')
-        print(f'**[prompt]:{prompt}')
-
-        search_word_before=[]
+        search_word_before = []
 
         while True:
             input_ids = self.tokenizer.encode(prompt, return_tensors='pt').to(self.device)
+            action, output_text = stream_until_search(self.model, self.tokenizer, input_ids, max_new_tokens=1500, temperature=0.4, repetition_penalty=1.2)
 
-            action, output_text = stream_until_search(
-                                                    self.model,
-                                                    self.tokenizer,
-                                                    input_ids,
-                                                    max_new_tokens=1500,
-                                                    temperature=0.4,
-                                                    repetition_penalty = 1.2
-                                                    )
-
-            instruct=''
-            search_results=''
-
-            print(f'[debug] output_text="{output_text}"')
+            instruct = ''
+            search_results = ''
             history.append(output_text)
 
-            if action=="answer" or cnt > self.max_turn:
+            if action == "answer" or cnt > self.max_turn:
                 response = output_text
-                print(f'[debug]search turn:{cnt}')
-                print(f'[debug]final answer:{response}')
                 break
-
-            elif action=="search":
+            elif action == "search":
                 tmp_query = self._extract_query(output_text)
-                print(f'[debug] search query="{tmp_query}"')
-                if search_word_before==tmp_query:#重复检索
-                    instruct="如果我想给出最终回答，应该把答案放在 <answer> 和 </answer>之间。 \
-                        如果需要继续搜索，应该把新的关键词放在<search> 和 </search>之间。重新思考。"
-                
-                elif tmp_query and( cnt < self.max_turn):
-                    search_word_before=tmp_query
+                if search_word_before == tmp_query:
+                    instruct = "如果我想给出最终回答，应该把答案放在 <answer> 和 </answer>之间。如果需要继续搜索，应该把新的关键词放在<search> 和 </search>之间。重新思考。"
+                elif tmp_query and (cnt < self.max_turn):
+                    search_word_before = tmp_query
                     search_results = self._search(tmp_query)
-                
-                elif cnt==self.max_turn:
+                elif cnt == self.max_turn:
                     instruct = "跳过检索阶段。注意：接下来总结以上思考，必须给出最终回答！把最终答案放在 <answer> 和 </answer>之间。"
-
                 else:
-                    instruct="检索失败。重新检索或直接回答。"
-
+                    instruct = "检索失败。重新检索或直接回答。"
             else:
-                instruct="\n我先前的操作有问题。 \
-如果我想搜索，应该把关键词放在<search> 和 </search>之间。 \
-如果我想给出最终回答，应该把答案放在 <answer> 和 </answer>之间。让我重新思考。\n"
+                instruct = "\n我先前的操作有问题。如果我想搜索，应该把关键词放在<search> 和 </search>之间。如果我想给出最终回答，应该把答案放在 <answer> 和 </answer>之间。让我重新思考。\n"
 
-            if len(search_results):
-                print(f'**[debug]searching result :\n"{search_results}"')
-                history.append(search_results)
-            if len(instruct):
-                print(f'**[debug]instruct :"{instruct}"')
-
+            if len(search_results): history.append(search_results)
+            
             search_text = self.search_template.format(output_text=output_text, search_results=search_results)
             prompt += search_text
             prompt += instruct
-
             cnt += 1
 
-        history='/n'.join(history)
+        history_str = '\n'.join(history)
+        ans = self._extract_answer(response)
+        return ans if ans else response, history_str
 
-        if self._extract_answer(response):
-            return self._extract_answer(response),history
-        else:
-            return response,history
+# 新增总结调用逻辑
+def get_vllm_summary(query, history, port=8008):
+    prompt = (
+        "你是一个专业、严谨的法律总结助手。请根据下方提供的用户【原问题】与系统的【完整思维链及初步回答】，"
+        "将其提炼成一份逻辑通顺、法理清晰、言简意赅的最终解答。\n"
+        "核心要求：\n"
+        "1. 剔除所有内部检索调用记录和 JSON 标签（如 <search>, <syllogism>, <answer>）。\n"
+        "2. 隐藏所有的推理和试错过程，直接向用户呈现最终结论。\n"
+        "3. 必须保留并明确引用判定所依据的核心法律条文或类案。\n\n"
+        f"【原问题】：{query}\n"
+        f"【思维链及初步回答】：{history}\n\n"
+        "请直接输出总结后的标准回答，无需任何开头客套话："
+    )
+    
+    url = f"http://127.0.0.1:{port}/v1/completions"
+    payload = {
+        "model": "Qwen3-8B",
+        "prompt": prompt,
+        "max_tokens": 1024,
+        "temperature": 0.2
+    }
+    
+    try:
+        res = requests.post(url, json=payload, timeout=60)
+        res.raise_for_status()
+        return res.json()["choices"][0]["text"].strip()
+    except Exception as e:
+        print(f"[ERROR] Summarization API Call Failed: {e}")
+        return history # 失败则回退返回全量 history
 
-
-
-
-def mt_dialogue_gen(data_path, llm, result_path):
+def mt_dialogue_gen(data_path, llm, result_path, summary_port):
     accelerator = Accelerator()
-
-    # 临时断点文件（JSONL）
     tmp_path = result_path + ".tmp"
-
-    # dataset
     dataset = TestDataset(data_path)
     val_dataloader = DataLoader(dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=dataset.collate_fn)
     val_dataloader = accelerator.prepare(val_dataloader)
-    accelerator.wait_for_everyone()
 
-    # 判断已处理样本数
-    processed = 0
-    if os.path.exists(tmp_path):
-        with open(tmp_path, "r", encoding="utf-8") as f:
-            processed = sum(1 for _ in f)
-    accelerator.print(f"Already processed: {processed}")
+    processed = sum(1 for _ in open(tmp_path, "r", encoding="utf-8")) if os.path.exists(tmp_path) else 0
 
     with torch.no_grad():
         dataloader_iterator = tqdm(val_dataloader, total=len(val_dataloader)) if accelerator.is_main_process else val_dataloader
-        print(dataloader_iterator)
         idx = 0
         for batch in dataloader_iterator:
             for data in batch:
-
-                # 跳过已处理的数据
                 if idx < processed:
                     idx += 1
                     continue
 
-                dialogue = ""
-                model_prompt = data["model_prompt"]
                 query = data["needs"]
-                dialogue += "用户：" + query + "\n"
+                model_prompt = data["model_prompt"]
+                
+                # 推理 + 检索
+                res, history = llm.gen(query, [], model_prompt)
+                res = res.strip()
+                
+                # 调用总结模型
+                summary = get_vllm_summary(query, history, port=summary_port)
 
-                history = []
-                for round in range(1, 2):
-                    data["dialogue_round"] = round
-                    res, history = llm.gen(query, history, model_prompt)
-                    res = res.strip()
-                    print("\n-----------------------------------res\n"+res)
-                    
-                    dialogue += "AI助手：" + res + "\n"
+                dialogue = f"用户：{query}\nAI助手：{summary}\n"
 
-                # 保存（追加写 JSONL）
                 output = {
                     "dialogue": dialogue,
                     "model": llm.model_path,
                     "thinking": history,
+                    "summary": summary
                 }
                 output.update(data)
 
                 if accelerator.is_main_process:
                     with open(tmp_path, "a", encoding="utf-8") as f:
                         f.write(json.dumps(output, ensure_ascii=False) + "\n")
-
                 idx += 1
-
         accelerator.wait_for_everyone()
 
-    # 主进程负责转换为最终 JSON 格式
     if accelerator.is_main_process:
-        data_list = []
-        with open(tmp_path, "r", encoding="utf-8") as f:
-            for line in f:
-                data_list.append(json.loads(line))
-
-        # 转为你的原格式
+        data_list = [json.loads(line) for line in open(tmp_path, "r", encoding="utf-8")]
         data_list = list_to_dict(data_list)
         with open(result_path, "w", encoding="utf-8") as f:
             json.dump(data_list, f, indent=4, ensure_ascii=False)
-
-        # 清理断点文件
         os.remove(tmp_path)
 
-    torch.cuda.empty_cache()
-    accelerator.wait_for_everyone()
-
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Args of sft')
-    # Model Args
-    parser.add_argument('--data_path', default='/mntcephfs/lab_data/ganruoli/UC_bench/dataset/legal_data/legal_data_sample.json', type=str)
-    parser.add_argument('--model_path', default='/mntcephfs/data/med/zhanghongbo/yaojishi/cjy/ckpts/huatuo2_7B_v2/checkpoint-0-30346/tfmr32', type=str)
-    parser.add_argument('--result_path', default='/mntcephfs/lab_data/ganruoli/UC_bench/experiment/legal/chatglm3-6b_legal.json', type=str)
-    parser.add_argument("--model_name", type=str, default="gpt-4o-2024-11-20", help="Name of the GPT model to use.")
-    # parser.add_argument("--api_key", type=str, required=True, help="OpenAI API key.")
-    # parser.add_argument("--api_url", type=str, default="https://api.openai.com/v1/chat/completions", help="OpenAI API URL.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_path', type=str, required=True)
+    parser.add_argument('--model_path', type=str, required=True)
+    parser.add_argument('--result_path', type=str, required=True)
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--max_turn', default=4, type=int)
     parser.add_argument('--topk', default=4, type=int)
-    parser.add_argument('--retriever', default=False, type=bool)
     parser.add_argument('--retrieve_path', default="http://127.0.0.1:8006/retrieve", type=str)
+    parser.add_argument('--summary_port', default=8008, type=int)
     
     args = parser.parse_args()
     set_seed(args.seed)
-    model_path=args.model_path
     
-
-    if args.retriever:
-        llm=LLM_retriever(model_path,
-                          retrieve_path=args.retrieve_path,
-                          max_turn=args.max_turn,
-                          topk=args.topk)
-    else:
-        llm= LLM(model_path)
-
-    mt_dialogue_gen(args.data_path,llm,args.result_path)
+    llm = LLM_retriever(args.model_path, retrieve_path=args.retrieve_path, max_turn=args.max_turn, topk=args.topk)
+    mt_dialogue_gen(args.data_path, llm, args.result_path, args.summary_port)
