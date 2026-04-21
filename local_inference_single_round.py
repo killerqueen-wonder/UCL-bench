@@ -12,6 +12,34 @@ from accelerate import Accelerator
 import transformers
 from transformers import set_seed
 
+import requests
+
+def get_universal_vllm_summary(query, history, port, model_name="Qwen3-8B"):
+    prompt = (
+        "你是一个专业、严谨的法律文书与答案整理助手。请根据下方提供的【原问题】与系统的【思维链解析】，提取出最终答案。\n\n"
+        "【核心规则】（请严格根据原问题的内容自动调整你的输出策略）：\n"
+        "1. **如果这是选择题**（原问题中明确包含了 A, B, C, D 或其他选项）：请你**直接且只输出最终的选项大写字母**（例如 A、C 、 ABCD或者其他预设选项）。绝对不要包含任何解释、分析过程、客套话，连标点符号都不要有。\n"
+        "2. **如果这是主观题/问答题**（原问题中没有选项）：请你整理出一份逻辑严密、法理清晰的最终解答。必须剔除所有 `<search>`, `<syllogism>`, `<answer>` 等内部标签及机器检索痕迹，保留相关法条和类案的核心内容，直接向用户呈现流畅专业的最终回答。\n\n"
+        f"【原问题】：{query}\n"
+        f"【思维链解析】：{history}\n\n"
+        "最终答案："
+    )
+
+    url = f"http://127.0.0.1:{port}/v1/completions"
+    payload = {
+        "model": model_name,
+        "prompt": prompt,
+        "max_tokens": 2048,
+        "temperature": 0.1 # 极低温度保证选择题输出稳定
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=60)
+        res.raise_for_status()
+        return res.json()["choices"][0]["text"].strip()
+    except Exception as e:
+        print(f"[ERROR] Summary API Failed: {e}")
+        return history # 兜底策略：失败则返回原历史
+    
 os.umask(0)
 logger = logging.getLogger(__name__)
 logging.basicConfig(level='INFO')
@@ -227,35 +255,7 @@ class LLM_retriever:
         ans = self._extract_answer(response)
         return ans if ans else response, history_str
 
-# 新增总结调用逻辑
-def get_vllm_summary(query, history, port=8008):
-    prompt = (
-        "你是一个专业、严谨的法律总结助手。请根据下方提供的用户【原问题】与系统的【完整思维链及初步回答】，"
-        "将其提炼成一份逻辑通顺、法理清晰、言简意赅的最终解答。\n"
-        "核心要求：\n"
-        "1. 剔除所有内部检索调用记录和 JSON 标签（如 <search>, <syllogism>, <answer>）。\n"
-        "2. 隐藏所有的推理和试错过程，直接向用户呈现最终结论。\n"
-        "3. 必须保留并明确引用判定所依据的核心法律条文或类案。\n\n"
-        f"【原问题】：{query}\n"
-        f"【思维链及初步回答】：{history}\n\n"
-        "请直接输出总结后的标准回答，无需任何开头客套话："
-    )
-    
-    url = f"http://127.0.0.1:{port}/v1/completions"
-    payload = {
-        "model": "Qwen3-8B",
-        "prompt": prompt,
-        "max_tokens": 1024,
-        "temperature": 0.2
-    }
-    
-    try:
-        res = requests.post(url, json=payload, timeout=60)
-        res.raise_for_status()
-        return res.json()["choices"][0]["text"].strip()
-    except Exception as e:
-        print(f"[ERROR] Summarization API Call Failed: {e}")
-        return history # 失败则回退返回全量 history
+
 
 def mt_dialogue_gen(data_path, llm, result_path, summary_port):
     accelerator = Accelerator()
@@ -283,7 +283,7 @@ def mt_dialogue_gen(data_path, llm, result_path, summary_port):
                 res = res.strip()
                 
                 # 调用总结模型
-                summary = get_vllm_summary(query, history, port=summary_port)
+                summary = get_universal_vllm_summary(query, history, port=args.summary_port)
 
                 dialogue = f"用户：{query}\nAI助手：{summary}\n"
 
