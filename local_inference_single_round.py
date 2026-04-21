@@ -1,45 +1,15 @@
+
+#################################
 import os
 import json
-import torch
 import logging
 import argparse
 import requests
 import re
-from transformers.generation.utils import GenerationConfig
+import time
 from tqdm import tqdm
-from torch.utils.data import DataLoader
-from accelerate import Accelerator
-import transformers
-from transformers import set_seed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
-
-def get_universal_vllm_summary(query, history, port, model_name="Qwen3-8B"):
-    prompt = (
-        "你是一个专业、严谨的法律文书与答案整理助手。请根据下方提供的【原问题】与系统的【思维链解析】，提取出最终答案。\n\n"
-        "【核心规则】（请严格根据原问题的内容自动调整你的输出策略）：\n"
-        "1. **如果这是选择题**（原问题中明确包含了 A, B, C, D 或其他选项）：请你**直接且只输出最终的选项大写字母**（例如 A、C 、 ABCD或者其他预设选项）。绝对不要包含任何解释、分析过程、客套话，连标点符号都不要有。\n"
-        "2. **如果这是主观题/问答题**（原问题中没有选项）：请你整理出一份逻辑严密、法理清晰的最终解答。必须剔除所有 `<search>`, `<syllogism>`, `<answer>` 等内部标签及机器检索痕迹，保留相关法条和类案的核心内容，直接向用户呈现流畅专业的最终回答。\n\n"
-        f"【原问题】：{query}\n"
-        f"【思维链解析】：{history}\n\n"
-        "最终答案："
-    )
-
-    url = f"http://127.0.0.1:{port}/v1/completions"
-    payload = {
-        "model": model_name,
-        "prompt": prompt,
-        "max_tokens": 2048,
-        "temperature": 0.1 # 极低温度保证选择题输出稳定
-    }
-    try:
-        res = requests.post(url, json=payload, timeout=60)
-        res.raise_for_status()
-        return res.json()["choices"][0]["text"].strip()
-    except Exception as e:
-        print(f"[ERROR] Summary API Failed: {e}")
-        return history # 兜底策略：失败则返回原历史
-    
 os.umask(0)
 logger = logging.getLogger(__name__)
 logging.basicConfig(level='INFO')
@@ -47,29 +17,13 @@ logging.basicConfig(level='INFO')
 def list_to_dict(data_list):
     classified_dict = {}
     for item in data_list:
-        task_name = item["task_name"]
+        task_name = item.get("task_name", "unknown")
         if task_name not in classified_dict:
             classified_dict[task_name] = [item]
         else:
             classified_dict[task_name].append(item)
     return classified_dict
 
-class TestDataset(torch.utils.data.Dataset):
-    def __init__(self, data_path):
-        with open(data_path) as f:
-            raw_data = json.load(f)
-        self.dataset = [item for sublist in raw_data.values() for item in sublist]  
-
-    def __getitem__(self, index):
-        return self.dataset[index]
-
-    def __len__(self):
-        return len(self.dataset)
-    
-    def collate_fn(self, batch):
-        return batch
-
-# 核心系统指令更新
 NEW_SYSTEM_PROMPT = """你是一个严谨且专业的法律AI助手。你的任务是通过逐步思考用户请求并回答法律问题。回答必须基于事实，严禁编造法律条文或案例。
 
 ### 核心指令：
@@ -109,100 +63,31 @@ NEW_SYSTEM_PROMPT = """你是一个严谨且专业的法律AI助手。你的任�
 以下是需要回答的问题：{question_text}
 """
 
-import torch.nn.functional as F
-
-class StreamStopper:
-    def __init__(self, tokenizer):
-        self.tokenizer = tokenizer
-        self.buffer = "" 
-        self.done = False
-        self.action = None
-        self.output_text = ""
-        self.generated_ids = []
-
-    def process_token(self, token_id):
-        self.generated_ids.append(token_id.item())
-        text = self.tokenizer.decode(self.generated_ids, skip_special_tokens=False)
-        new_text = text[len(self.buffer):]
-        self.buffer += new_text
-
-        if "</search>" in self.buffer and not self.done:
-            self.done = True
-            self.action = "search"
-            self.output_text = self.tokenizer.decode(self.generated_ids, skip_special_tokens=False).split("</search>")[0] + "</search>"
-        elif "</answer>" in self.buffer and not self.done:
-            self.done = True
-            self.action = "answer"
-            self.output_text = self.tokenizer.decode(self.generated_ids, skip_special_tokens=False).split("</answer>")[0] + "</answer>"
-
-        return new_text
-
-@torch.no_grad()
-def stream_until_search(model, tokenizer, input_ids, max_new_tokens=1500, temperature=0.3, repetition_penalty=1.2):
-    stopper = StreamStopper(tokenizer)
-    generated = input_ids
-    past_key_values = None
-
-    for _ in range(max_new_tokens):
-        outputs = model(generated if past_key_values is None else generated[:, -1:], use_cache=True, past_key_values=past_key_values)
-        logits = outputs.logits[:, -1, :]
-        past_key_values = outputs.past_key_values
-
-        for token_id in set(generated[0].tolist()):
-            logits[0, token_id] /= repetition_penalty
-
-        probs = F.softmax(logits / temperature, dim=-1)
-        next_token = torch.multinomial(probs, num_samples=1)
-        stopper.process_token(next_token[0])
-        generated = torch.cat((generated, next_token), dim=1)
-
-        if stopper.done:
-            break
-
-    return stopper.action, stopper.output_text
-
-class LLM_retriever:
-    def __init__(self, model_path, retrieve_path, max_turn=5, topk=3):
-        self.model_path = model_path
-        self.topk = topk
-        self.retrieve_path = retrieve_path
+class VLLM_Retriever_Agent:
+    def __init__(self, vllm_url, retrieve_url, model_name="Qwen3-8B", max_turn=5, topk=3):
+        self.vllm_url = f"{vllm_url}/v1/completions"
+        self.retrieve_url = retrieve_url
+        self.model_name = model_name
         self.max_turn = max_turn
-        
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_path)
-        self.model = transformers.AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=torch.bfloat16, device_map="auto")
-
-        if 'Qwen' in model_path:
-            self.tokenizer.pad_token_id = 151643
-            self.tokenizer.eos_token_id = 151643
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = '</s>'
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.topk = topk
         self.search_template = '\n\n{output_text}<information>{search_results}</information>\n\n'
 
-    def _extract_query(self, text):
-        pattern = re.compile(r"<search>(.*?)</search>", re.DOTALL)
+    def _extract_tag(self, text, tag):
+        pattern = re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL)
         matches = pattern.findall(text)
-        return matches[-1] if matches else None
-    
-    def _extract_answer(self, text):
-        pattern = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
-        matches = pattern.findall(text)
-        return matches[-1] if matches else None
+        return matches[-1].strip() if matches else None
 
     def _search(self, query):
-        if not query or not query.strip(): return ""
+        if not query or not query.strip() or not self.retrieve_url: return ""
         payload = {"queries": [query], "topk": self.topk, "return_scores": True}
         try:
-            response = requests.post(self.retrieve_path, json=payload, timeout=10)
-            response.raise_for_status()
-            results = response.json().get("result", [])
+            res = requests.post(self.retrieve_url, json=payload, timeout=15)
+            res.raise_for_status()
+            results = res.json().get("result", [])
         except Exception as e:
-            print(f"[ERROR] Search failed: {e}")
             return ""
 
         if not results: return ""
-        
         format_reference = ''
         for idx, doc_item in enumerate(results[0]):
             content = doc_item['document']['content']
@@ -211,116 +96,217 @@ class LLM_retriever:
             format_reference += f"Doc {idx+1}(Title: {title}) {text}\n"
         return format_reference
 
-    def gen(self, query, history=[], model_prompt=""):
+    def gen(self, query, instruction=""):
         question = query.strip()
-        if len(model_prompt): question = model_prompt + question
+        if instruction: question = f"{instruction}\n{question}"
         
         prompt = NEW_SYSTEM_PROMPT.format(question_text=question)
         cnt = 0
-        search_word_before = []
+        search_word_before = ""
+        history = []
+
+        # ================= 推理阶段性能统计 =================
+        sys_tool_latency = 0.0        
+        sys_rag_count = 0             
+        sys_user_prompt_tokens = 0    
+        sys_total_prompt_tokens = 0   
+        sys_total_completion_tokens = 0 
+        # ================================================
 
         while True:
-            input_ids = self.tokenizer.encode(prompt, return_tensors='pt').to(self.device)
-            action, output_text = stream_until_search(self.model, self.tokenizer, input_ids, max_new_tokens=1500, temperature=0.4, repetition_penalty=1.2)
+            payload = {
+                "model": self.model_name,
+                "prompt": f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n",
+                "max_tokens": 1500,
+                "temperature": 0.3,
+                "stop": ["</search>", "</answer>", "<|im_end|>"]
+            }
+            
+            output_text = ""
+            current_prompt_tokens = 0
+            current_completion_tokens = 0
+            
+            try:
+                
+                res = requests.post(self.vllm_url, json=payload, timeout=200)
+                res.raise_for_status()
+                data = res.json()
+                
+                output_text = data["choices"][0].get("text", "")
+                usage = data.get("usage", {})
+                current_prompt_tokens = usage.get("prompt_tokens", 0)
+                current_completion_tokens = usage.get("completion_tokens", 0)
+                
+            except Exception as e:
+                logger.error(f"vLLM 请求异常: {e}")
+                break
 
+            # --- 累加 Token 指标 ---
+            if cnt == 0:
+                sys_user_prompt_tokens = current_prompt_tokens # 记录用户的首轮干净输入
+            
+            sys_total_prompt_tokens += current_prompt_tokens
+            sys_total_completion_tokens += current_completion_tokens
+
+            # --- 标签补齐 ---
+            if "<search>" in output_text and "</search>" not in output_text:
+                output_text += "</search>"; action = "search"
+            elif "<answer>" in output_text and "</answer>" not in output_text:
+                output_text += "</answer>"; action = "answer"
+            else:
+                action = "answer"
+
+            history.append(output_text)
             instruct = ''
             search_results = ''
-            history.append(output_text)
 
-            if action == "answer" or cnt > self.max_turn:
-                response = output_text
+            # --- 动作路由 ---
+            if action == "answer" or cnt >= self.max_turn:
                 break
+                
             elif action == "search":
-                tmp_query = self._extract_query(output_text)
-                if search_word_before == tmp_query:
-                    instruct = "如果我想给出最终回答，应该把答案放在 <answer> 和 </answer>之间。如果需要继续搜索，应该把新的关键词放在<search> 和 </search>之间。重新思考。"
-                elif tmp_query and (cnt < self.max_turn):
+                tmp_query = self._extract_tag(output_text, "search")
+                if tmp_query == search_word_before:
+                    instruct = "请勿重复检索。尝试直接回答或使用新关键词。"
+                elif tmp_query and cnt < self.max_turn:
                     search_word_before = tmp_query
+                    # 捕获检索阻塞耗时
+                    t0 = time.time()
                     search_results = self._search(tmp_query)
+                    sys_tool_latency += (time.time() - t0)
+                    sys_rag_count += 1
                 elif cnt == self.max_turn:
-                    instruct = "跳过检索阶段。注意：接下来总结以上思考，必须给出最终回答！把最终答案放在 <answer> 和 </answer>之间。"
+                    instruct = "跳过检索。请立即给出最终回答，包裹在 <answer> 中。"
                 else:
-                    instruct = "检索失败。重新检索或直接回答。"
-            else:
-                instruct = "\n我先前的操作有问题。如果我想搜索，应该把关键词放在<search> 和 </search>之间。如果我想给出最终回答，应该把答案放在 <answer> 和 </answer>之间。让我重新思考。\n"
+                    instruct = "检索格式错误。请重新思考。"
 
-            if len(search_results): history.append(search_results)
-            
-            search_text = self.search_template.format(output_text=output_text, search_results=search_results)
-            prompt += search_text
+            if search_results: history.append(search_results)
+            prompt += self.search_template.format(output_text=output_text, search_results=search_results)
             prompt += instruct
             cnt += 1
 
-        history_str = '\n'.join(history)
-        ans = self._extract_answer(response)
-        return ans if ans else response, history_str
+        agent_metrics = {
+            "tool_latency_sec": sys_tool_latency,
+            "rag_count": sys_rag_count,
+            "user_prompt_tokens": sys_user_prompt_tokens,
+            "main_total_prompt_tokens": sys_total_prompt_tokens,
+            "main_total_comp_tokens": sys_total_completion_tokens
+        }
 
+        return "\n".join(history), agent_metrics
 
+def get_universal_vllm_summary(query, history, port, model_name="Qwen3-8B"):
+    prompt = (
+        "你是一个专业、严谨的法律文书与答案整理助手。请根据下方提供的【原问题】与系统的【思维链解析】，提取出最终答案。\n\n"
+        "【核心规则】（请严格根据原问题的内容自动调整你的输出策略）：\n"
+        "1. **如果这是选择题**（原问题中明确包含了 A, B, C, D 或其他选项）：请你**直接且只输出最终的选项大写字母**（例如 A、C 、 ABCD或者其他预设选项）。绝对不要包含任何解释、分析过程、客套话，连标点符号都不要有。\n"
+        "2. **如果这是主观题/问答题**（原问题中没有选项）：请你整理出一份逻辑严密、法理清晰的最终解答。必须剔除所有 `<search>`, `<syllogism>`, `<answer>` 等内部标签及机器检索痕迹，保留相关法条和类案的核心内容，直接向用户呈现流畅专业的最终回答。\n\n"
+        f"【原问题】：{query}\n"
+        f"【思维链解析】：{history}\n\n"
+        "最终答案："
+    )
+    url = f"http://127.0.0.1:{port}/v1/completions"
+    payload = {"model": model_name, "prompt": prompt, "max_tokens": 1024, "temperature": 0.1}
+    
+    try:
+        res = requests.post(url, json=payload, timeout=60)
+        res.raise_for_status()
+        data = res.json()
+        
+        summary_text = data["choices"][0]["text"].strip()
+        usage = data.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        comp_tokens = usage.get("completion_tokens", 0)
+        
+        return summary_text, prompt_tokens, comp_tokens
+    except Exception as e:
+        logger.error(f"Summary API 调用失败: {e}")
+        return history, 0, 0 
 
-def mt_dialogue_gen(data_path, llm, result_path, summary_port):
-    accelerator = Accelerator()
-    tmp_path = result_path + ".tmp"
-    dataset = TestDataset(data_path)
-    val_dataloader = DataLoader(dataset, batch_size=1, shuffle=False, drop_last=False, collate_fn=dataset.collate_fn)
-    val_dataloader = accelerator.prepare(val_dataloader)
+def process_single_item(item, agent, summary_port):
+    # --- 记录整体起止时间 ---
+    start_time = time.time()
+    
+    query = item["needs"]
+    model_prompt = item.get("model_prompt", "")
+    full_prompt = f"{model_prompt}\n{query}" if model_prompt else query
+    
+    # 1. 主代理推理
+    history, agent_metrics = agent.gen(query=query, instruction=model_prompt)
+    
+    # 2. 总结代理脱水
+    summary, sum_prompt_tok, sum_comp_tok = get_universal_vllm_summary(full_prompt, history, summary_port, agent.model_name)
+    
+    # --- 结束整体计时 ---
+    total_time_sec = time.time() - start_time
+    
+    # 3. 终极 Token 清算 
+    user_prompt_tokens = agent_metrics["user_prompt_tokens"]
+    completion_tokens = sum_comp_tok  # 给用户看的最终回答
+    
+    # 全流程系统总消耗 Token = (主Agent Prompt + 主Agent Comp) + (总结Agent Prompt + 总结Agent Comp)
+    total_tokens = (agent_metrics["main_total_prompt_tokens"] + agent_metrics["main_total_comp_tokens"]) + (sum_prompt_tok + sum_comp_tok)
+    
+    # 中间损耗 Token
+    inter_agent_tokens = total_tokens - user_prompt_tokens - completion_tokens
 
-    processed = sum(1 for _ in open(tmp_path, "r", encoding="utf-8")) if os.path.exists(tmp_path) else 0
+    # 4. 构建输出结果
+    out_item = item.copy()
+    out_item["dialogue"] = f"用户：{query}\nAI助手：{summary}\n"
+    out_item["model"] = agent.model_name
+    out_item["thinking"] = history
+    out_item["summary"] = summary
+    
+    # 性能与成本指标保存
+    out_item["total_time_sec"] = total_time_sec
+    out_item["tool_latency_sec"] = agent_metrics["tool_latency_sec"]
+    out_item["rag_count"] = agent_metrics["rag_count"]
+    
+    out_item["total_tokens"] = total_tokens
+    out_item["user_prompt_tokens"] = user_prompt_tokens
+    out_item["completion_tokens"] = completion_tokens
+    out_item["inter_agent_tokens"] = inter_agent_tokens
+    
+    return out_item
 
-    with torch.no_grad():
-        dataloader_iterator = tqdm(val_dataloader, total=len(val_dataloader)) if accelerator.is_main_process else val_dataloader
-        idx = 0
-        for batch in dataloader_iterator:
-            for data in batch:
-                if idx < processed:
-                    idx += 1
-                    continue
+def mt_dialogue_gen(data_path, result_path, agent, summary_port, workers=32):
+    with open(data_path, 'r', encoding='utf-8') as f:
+        raw_data = json.load(f)
+    
+    dataset = [item for sublist in raw_data.values() for item in sublist]
+    results = []
 
-                query = data["needs"]
-                model_prompt = data["model_prompt"]
-                
-                # 推理 + 检索
-                res, history = llm.gen(query, [], model_prompt)
-                res = res.strip()
-                
-                # 调用总结模型
-                summary = get_universal_vllm_summary(query, history, port=args.summary_port)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(process_single_item, item, agent, summary_port) for item in dataset]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="UCL-Bench Inferencing"):
+            results.append(future.result())
 
-                dialogue = f"用户：{query}\nAI助手：{summary}\n"
-
-                output = {
-                    "dialogue": dialogue,
-                    "model": llm.model_path,
-                    "thinking": history,
-                    "summary": summary
-                }
-                output.update(data)
-
-                if accelerator.is_main_process:
-                    with open(tmp_path, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(output, ensure_ascii=False) + "\n")
-                idx += 1
-        accelerator.wait_for_everyone()
-
-    if accelerator.is_main_process:
-        data_list = [json.loads(line) for line in open(tmp_path, "r", encoding="utf-8")]
-        data_list = list_to_dict(data_list)
-        with open(result_path, "w", encoding="utf-8") as f:
-            json.dump(data_list, f, indent=4, ensure_ascii=False)
-        os.remove(tmp_path)
+    final_dict = list_to_dict(results)
+    with open(result_path, "w", encoding="utf-8") as f:
+        json.dump(final_dict, f, indent=4, ensure_ascii=False)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_path', type=str, required=True)
-    parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--result_path', type=str, required=True)
-    parser.add_argument('--seed', default=42, type=int)
-    parser.add_argument('--max_turn', default=4, type=int)
-    parser.add_argument('--topk', default=4, type=int)
-    parser.add_argument('--retrieve_path', default="http://127.0.0.1:8006/retrieve", type=str)
-    parser.add_argument('--summary_port', default=8008, type=int)
+    parser.add_argument('--model_path', type=str, default="Qwen3-8B")
+    parser.add_argument('--vllm_url', type=str, default="http://127.0.0.1:8007")
+    parser.add_argument('--summary_port', type=int, default=8008)
+    parser.add_argument('--retrieve_path', default="http://127.0.0.1:8005/retrieve", type=str)
+    parser.add_argument('--retriever', type=bool, default=True)
+    parser.add_argument('--max_turn', default=12, type=int)
+    parser.add_argument('--topk', default=10, type=int)
+    parser.add_argument('--workers', default=32, type=int)
     
     args = parser.parse_args()
-    set_seed(args.seed)
-    
-    llm = LLM_retriever(args.model_path, retrieve_path=args.retrieve_path, max_turn=args.max_turn, topk=args.topk)
-    mt_dialogue_gen(args.data_path, llm, args.result_path, args.summary_port)
+    os.makedirs(os.path.dirname(args.result_path) or ".", exist_ok=True)
+
+    agent = VLLM_Retriever_Agent(
+        vllm_url=args.vllm_url,
+        retrieve_url=args.retrieve_path if args.retriever else None,
+        model_name="Qwen3-8B",
+        max_turn=args.max_turn,
+        topk=args.topk
+    )
+
+    mt_dialogue_gen(args.data_path, args.result_path, agent, args.summary_port, args.workers)
