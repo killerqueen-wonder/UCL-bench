@@ -119,7 +119,7 @@ class VLLM_Retriever_Agent:
         question = query.strip()
         if instruction: question = f"{instruction}\n{question}"
         
-        prompt = NEW_SYSTEM_PROMPT.format(question_text=question)
+        prompt = NEW_SYSTEM_PROMPT.format(question_text=question,max_turn=self.max_turn)
         cnt = 0
         search_word_before = ""
         history = []
