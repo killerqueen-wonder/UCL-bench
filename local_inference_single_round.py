@@ -96,24 +96,70 @@ class VLLM_Retriever_Agent:
         matches = pattern.findall(text)
         return matches[-1].strip() if matches else None
 
-    def _search(self, query):
-        if not query or not query.strip() or not self.retrieve_url: return ""
-        payload = {"queries": [query], "topk": self.topk, "return_scores": True}
-        try:
-            res = requests.post(self.retrieve_url, json=payload, timeout=15)
-            res.raise_for_status()
-            results = res.json().get("result", [])
-        except Exception as e:
-            return ""
+    def _search(self, query_str):
+        """将提取出的 JSON 字符串解析并发送到 RAG 服务端"""
+        if not query_str or not query_str.strip():
+            print("[WARNING] Empty query passed to search function.")
+            return "检索失败：未提供有效的检索词。"
 
-        if not results: return ""
-        format_reference = ''
-        for idx, doc_item in enumerate(results[0]):
-            content = doc_item['document']['content']
-            title = content.split("\n")[0]
-            text = "\n".join(content.split("\n")[1:])
-            format_reference += f"Doc {idx+1}(Title: {title}) {text}\n"
-        return format_reference
+        # 1. 尝试将模型生成的字符串解析为 JSON 字典
+        try:
+            search_query_dict = json.loads(query_str)
+        except json.JSONDecodeError as e:
+            print(f"\n[WARNING] 模型生成的检索词并非合法 JSON: {e}")
+            print(f"原始内容: {query_str}")
+            # 严格对齐 GRPO 训练环境的反馈，让模型在下一轮尝试自我纠正
+            return "工具调用失败：<search>标签内的JSON格式不合法，请检查并严格按照JSON格式输出再试一次。"
+
+        # 2. 包装成 RAG 接口要求的 UnifiedQueryRequest 格式
+        payload = {
+            "query": search_query_dict,
+            "topk": self.top_k
+        }
+
+        # 3. 发送 HTTP 请求
+        try:
+            response = requests.post(
+                self.retrieve_path,
+                json=payload,
+                proxies={"http": None, "https": None},
+                timeout=120  # 保持长超时以防高并发排队
+            )
+            response.raise_for_status()
+            json_data = response.json()
+            
+            # 4. 解析并组装返回结果（完全对齐生成训练数据的格式）
+            if "error" in json_data:
+                return f"检索返回错误：{json_data['error']}"
+
+            req_type = json_data.get("检索类型", "")
+
+            if req_type == "法律检索":
+                results = json_data.get("result", [])
+                format_reference = []
+                
+                for idx, doc_item in enumerate(results):
+                    content = doc_item.get('document', {}).get('content', '')
+                    score = doc_item.get('score', 0.0)
+                    format_reference.append(f"法条参考 {idx + 1} :\n{content}\n")
+                
+                if not format_reference:
+                    return "【法律检索结果】未找到相关的法律条文，请尝试更换关键词。"
+                return "【法律检索结果】\n" + "\n".join(format_reference)
+
+            elif req_type == "类案检索":
+                summary = json_data.get("llm_summary", "未检索到匹配的类案分析结果。")
+                return f"【类案检索分析报告】\n{summary}"
+            
+            else:
+                return f"未知的检索类型返回，原始数据: {str(json_data)[:200]}"
+
+        except requests.exceptions.Timeout:
+            print("[ERROR] Search request timed out.")
+            return "检索超时，请稍后重试。"
+        except Exception as e:
+            print(f"[ERROR] Request failed: {e}")
+            return f"检索系统网络或内部错误: {str(e)}"
 
     def gen(self, query, instruction=""):
         question = query.strip()
@@ -219,7 +265,7 @@ def get_universal_vllm_summary(query, history, port, model_name="Qwen3-8B"):
         "你是一个专业、严谨的法律文书与答案整理助手。请根据下方提供的【原问题】与系统的【思维链解析】，提取出最终答案。\n\n"
         "【核心规则】（请严格根据原问题的内容自动调整你的输出策略）：\n"
         "1. **如果这是选择题**（原问题中明确包含了 A, B, C, D 或其他选项）：请你**直接且只输出最终的选项大写字母**（例如 A、C 、 ABCD或者其他预设选项）。绝对不要包含任何解释、分析过程、客套话，连标点符号都不要有。\n"
-        "2. **如果这是主观题/问答题**（原问题中没有选项）：请你整理出一份逻辑严密、法理清晰的最终解答。必须剔除所有 `<search>`, `<syllogism>`, `<answer>` 等内部标签及机器检索痕迹，保留相关法条和类案的核心内容，直接向用户呈现流畅专业的最终回答。\n\n"
+        "2. **如果这是主观题/问答题**（原问题中没有选项）：请你总结整理出一份逻辑严密、法理清晰的最终解答。\n\n"
         f"【原问题】：{query}\n"
         f"【思维链解析】：{history}\n\n"
         "最终答案："
