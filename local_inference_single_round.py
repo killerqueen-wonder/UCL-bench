@@ -114,7 +114,7 @@ class VLLM_Retriever_Agent:
         # 2. 包装成 RAG 接口要求的 UnifiedQueryRequest 格式
         payload = {
             "query": search_query_dict,
-            "topk": self.top_k
+            "topk": self.topk
         }
 
         # 3. 发送 HTTP 请求
